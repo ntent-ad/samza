@@ -23,11 +23,13 @@ import org.apache.samza.SamzaException;
 import org.apache.samza.config.ElasticsearchConfig;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.client.transport.TransportClient;
-import org.elasticsearch.common.settings.ImmutableSettings;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.elasticsearch.common.transport.TransportAddress;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.Map;
 
 /**
@@ -42,14 +44,18 @@ import java.util.Map;
  */
 public class TransportClientFactory implements ClientFactory {
   private final Map<String, String> clientSettings;
-  private final String transportHost;
+  private final InetAddress transportHost;
   private final int transportPort;
 
   public TransportClientFactory(ElasticsearchConfig config) {
     clientSettings = config.getElasticseachSettings();
 
     if (config.getTransportHost().isPresent()) {
-      transportHost = config.getTransportHost().get();
+      try {
+        transportHost = InetAddress.getByName(config.getTransportHost().get());
+      } catch (UnknownHostException e) {
+        throw new RuntimeException("Transport host is invalid", e);
+      }
     } else {
       throw new SamzaException("You must specify the transport host for TransportClientFactory"
                                + "with the Elasticsearch system.");
@@ -65,12 +71,12 @@ public class TransportClientFactory implements ClientFactory {
 
   @Override
   public Client getClient() {
-    Settings settings = ImmutableSettings.settingsBuilder()
+    Settings settings = Settings.settingsBuilder()
         .put(clientSettings)
         .build();
 
     TransportAddress address = new InetSocketTransportAddress(transportHost, transportPort);
 
-    return new TransportClient(settings).addTransportAddress(address);
+    return TransportClient.builder().settings(settings).build().addTransportAddress(address);
   }
 }
