@@ -1,0 +1,20 @@
+subprojects {
+    apply plugin: 'maven-publish'
+    apply plugin: 'java'
+
+    project.sourceCompatibility = '1.7'
+
+    publishing {
+        repositories {
+            maven {
+                //url "$rootDir/repo"
+                //url "http://nexus.cb.ntent.com/nexus/content/repositories/snapshots/"
+                url "http://nexus.cb.ntent.com/nexus/content/repositories/releases/"
+                credentials {
+                    username mavenUser
+                    password mavenPassword
+                }
+            }
+        }
+    }
+}

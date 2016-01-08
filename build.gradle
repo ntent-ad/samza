@@ -19,7 +19,8 @@
 
 buildscript {
   repositories {
-    mavenCentral()
+    //mavenCentral()
+    maven {url "http://nexus.cb.ntent.com/nexus/content/groups/public/"}
   }
 
   apply from: file('gradle/buildscript.gradle'), to: buildscript
@@ -27,8 +28,9 @@ buildscript {
 
 allprojects {
   repositories {
-    mavenCentral()
-    mavenLocal()
+    //mavenCentral()
+    //mavenLocal()
+    maven {url "http://nexus.cb.ntent.com/nexus/content/groups/public/"}
  }
 }
 

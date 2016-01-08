@@ -30,3 +30,7 @@ if(!project.hasProperty('overrideBuildEnvironment')) {
   // Otherwise, assume overrideBuildEnvironment defines a path to a file, and apply it.
   apply from: project.overrideBuildEnvironment
 } 
+
+if(new File("$rootDir/local.gradle").exists()) {
+  apply from: file("$rootDir/local.gradle")
+}
