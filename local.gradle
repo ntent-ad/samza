@@ -1,7 +1,4 @@
 subprojects {
-    apply plugin: 'maven-publish'
-    apply plugin: 'java'
-
     project.sourceCompatibility = '1.7'
 
     publishing {

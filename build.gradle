@@ -527,3 +527,25 @@ project(":samza-test_$scalaVersion") {
     from(configurations.archives.artifacts.files) { into("lib/") }
   }
 }
+
+/*
+subprojects {
+    task sourceJar(type: Jar) {
+        from sourceSets.main.allSource
+    }
+}
+
+subprojects {
+  apply plugin: 'maven-publish'
+  apply plugin: 'java'
+
+  publishing {
+        publications {
+            mavenSources(MavenPublication) {
+              from sourceJar
+              artifact sourceJar {classifier "sources"}
+            }
+        }
+    }
+}
+*/

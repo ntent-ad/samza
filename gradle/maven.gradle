@@ -18,6 +18,7 @@
  */
 subprojects {
   apply plugin: 'maven-publish'
+  apply plugin: 'java'
 
   publishing {
     publications {
@@ -28,7 +29,17 @@ subprojects {
             classifier "dist"
           }
         }
+
+        artifact sourcesJar {classifier "sources"}
      }
     }
   }
 }
+
+/*
+subprojects {
+  task sourceJar(type: Jar) {
+    from sourceSets.main.allSource
+  }
+}
+*/
