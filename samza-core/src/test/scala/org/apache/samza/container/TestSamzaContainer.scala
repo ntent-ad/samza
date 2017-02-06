@@ -19,22 +19,21 @@
 
 package org.apache.samza.container
 
+import java.lang.Thread.UncaughtExceptionHandler
 import java.util
-import org.apache.samza.storage.TaskStorageManager
-import org.mockito.invocation.InvocationOnMock
-import org.mockito.stubbing.Answer
-import org.scalatest.mock.MockitoSugar
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
-import scala.collection.JavaConversions._
 import org.apache.samza.Partition
-import org.apache.samza.config.Config
-import org.apache.samza.config.MapConfig
-import org.apache.samza.coordinator.JobCoordinator
-import org.apache.samza.coordinator.server.HttpServer
-import org.apache.samza.coordinator.server.JobServlet
+import org.apache.samza.checkpoint.{Checkpoint, CheckpointManager}
+import org.apache.samza.config.{Config, MapConfig}
+import org.apache.samza.coordinator.JobModelManager
+import org.apache.samza.coordinator.server.{HttpServer, JobServlet}
 import org.apache.samza.job.model.ContainerModel
 import org.apache.samza.job.model.JobModel
 import org.apache.samza.job.model.TaskModel
+import org.apache.samza.serializers._
+import org.apache.samza.storage.TaskStorageManager
 import org.apache.samza.system.IncomingMessageEnvelope
 import org.apache.samza.system.StreamMetadataCache
 import org.apache.samza.system.SystemConsumer
@@ -54,11 +53,13 @@ import org.apache.samza.task.TaskInstanceCollector
 import org.apache.samza.util.SinglePartitionWithoutOffsetsSystemAdmin
 import org.junit.Assert._
 import org.junit.Test
-import org.scalatest.junit.AssertionsForJUnit
-import java.lang.Thread.UncaughtExceptionHandler
-import org.apache.samza.serializers._
-import org.apache.samza.checkpoint.{Checkpoint, CheckpointManager}
 import org.mockito.Mockito._
+import org.mockito.invocation.InvocationOnMock
+import org.mockito.stubbing.Answer
+import org.scalatest.junit.AssertionsForJUnit
+import org.scalatest.mock.MockitoSugar
+
+import scala.collection.JavaConversions._
 
 class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
   @Test
@@ -75,14 +76,42 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
     val jobModel = new JobModel(config, containers)
     def jobModelGenerator(): JobModel = jobModel
     val server = new HttpServer
-    val coordinator = new JobCoordinator(jobModel, server)
-    coordinator.server.addServlet("/*", new JobServlet(jobModelGenerator))
+    val coordinator = new JobModelManager(jobModel, server)
+    JobModelManager.jobModelRef.set(jobModelGenerator())
+    coordinator.server.addServlet("/*", new JobServlet(JobModelManager.jobModelRef))
     try {
       coordinator.start
       assertEquals(jobModel, SamzaContainer.readJobModel(server.getUrl.toString))
     } finally {
       coordinator.stop
     }
+  }
+
+  @Test
+  def testReadJobModelWithTimeouts {
+    val config = new MapConfig(Map("a" -> "b"))
+    val offsets = new util.HashMap[SystemStreamPartition, String]()
+    offsets.put(new SystemStreamPartition("system","stream", new Partition(0)), "1")
+    val tasks = Map(
+      new TaskName("t1") -> new TaskModel(new TaskName("t1"), offsets.keySet(), new Partition(0)),
+      new TaskName("t2") -> new TaskModel(new TaskName("t2"), offsets.keySet(), new Partition(0)))
+    val containers = Map(
+      Integer.valueOf(0) -> new ContainerModel(0, tasks),
+      Integer.valueOf(1) -> new ContainerModel(1, tasks))
+    val jobModel = new JobModel(config, containers)
+    def jobModelGenerator(): JobModel = jobModel
+    val server = new HttpServer
+    val coordinator = new JobModelManager(jobModel, server)
+    JobModelManager.jobModelRef.set(jobModelGenerator())
+    val mockJobServlet = new MockJobServlet(2, JobModelManager.jobModelRef)
+    coordinator.server.addServlet("/*", mockJobServlet)
+    try {
+      coordinator.start
+      assertEquals(jobModel, SamzaContainer.readJobModel(server.getUrl.toString))
+    } finally {
+      coordinator.stop
+    }
+    assertEquals(2, mockJobServlet.exceptionCount)
   }
 
   @Test
@@ -164,7 +193,8 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
     val runLoop = new RunLoop(
       taskInstances = Map(taskName -> taskInstance),
       consumerMultiplexer = consumerMultiplexer,
-      metrics = new SamzaContainerMetrics)
+      metrics = new SamzaContainerMetrics,
+      maxThrottlingDelayMs = TimeUnit.SECONDS.toMillis(1))
     val container = new SamzaContainer(
       containerContext = containerContext,
       taskInstances = Map(taskName -> taskInstance),
@@ -205,6 +235,65 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
     t.start
     t.join
     assertTrue(caughtException)
+  }
+
+  @Test
+  def testErrorInTaskInitShutsDownTask {
+    val task = new StreamTask with InitableTask with ClosableTask {
+      var wasShutdown = false
+
+      def init(config: Config, context: TaskContext) {
+        throw new NoSuchMethodError("Trigger a shutdown, please.")
+      }
+
+      def process(envelope: IncomingMessageEnvelope, collector: MessageCollector, coordinator: TaskCoordinator) {
+      }
+
+      def close {
+        wasShutdown = true
+      }
+    }
+    val config = new MapConfig
+    val taskName = new TaskName("taskName")
+    val consumerMultiplexer = new SystemConsumers(
+      new RoundRobinChooser,
+      Map[String, SystemConsumer]())
+    val producerMultiplexer = new SystemProducers(
+      Map[String, SystemProducer](),
+      new SerdeManager)
+    val collector = new TaskInstanceCollector(producerMultiplexer)
+    val containerContext = new SamzaContainerContext(0, config, Set[TaskName](taskName))
+    val taskInstance: TaskInstance = new TaskInstance(
+      task,
+      taskName,
+      config,
+      new TaskInstanceMetrics,
+      null,
+      consumerMultiplexer,
+      collector,
+      containerContext
+    )
+    val runLoop = new RunLoop(
+      taskInstances = Map(taskName -> taskInstance),
+      consumerMultiplexer = consumerMultiplexer,
+      metrics = new SamzaContainerMetrics,
+      maxThrottlingDelayMs = TimeUnit.SECONDS.toMillis(1))
+    val container = new SamzaContainer(
+      containerContext = containerContext,
+      taskInstances = Map(taskName -> taskInstance),
+      runLoop = runLoop,
+      consumerMultiplexer = consumerMultiplexer,
+      producerMultiplexer = producerMultiplexer,
+      metrics = new SamzaContainerMetrics,
+      jmxServer = null
+    )
+    try {
+      container.run
+      fail("Expected error to be thrown in run method.")
+    } catch {
+      case e: Throwable => // Expected
+    }
+    assertTrue(task.wasShutdown)
   }
 
   @Test
@@ -271,4 +360,18 @@ class MockCheckpointManager extends CheckpointManager {
   override def readLastCheckpoint(taskName: TaskName): Checkpoint = { new Checkpoint(Map[SystemStreamPartition, String]()) }
 
   override def writeCheckpoint(taskName: TaskName, checkpoint: Checkpoint): Unit = { }
+}
+
+class MockJobServlet(exceptionLimit: Int, jobModelRef: AtomicReference[JobModel]) extends JobServlet(jobModelRef) {
+  var exceptionCount = 0
+
+  override protected def getObjectToWrite() = {
+    if (exceptionCount < exceptionLimit) {
+      exceptionCount += 1
+      throw new java.io.IOException("Throwing exception")
+    } else {
+      val jobModel = jobModelRef.get()
+      jobModel
+    }
+  }
 }

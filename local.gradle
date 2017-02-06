@@ -1,5 +1,5 @@
 subprojects {
-    project.sourceCompatibility = '1.7'
+    project.sourceCompatibility = '1.8'
 
     publishing {
         repositories {
