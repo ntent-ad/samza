@@ -23,7 +23,9 @@ import org.apache.samza.SamzaException;
 import org.apache.samza.metrics.MetricsRegistryMap;
 import org.apache.samza.system.OutgoingMessageEnvelope;
 import org.apache.samza.system.SystemProducer;
+import org.apache.samza.system.elasticsearch.actionrequest.ActionRequestFactory;
 import org.apache.samza.system.elasticsearch.indexrequest.IndexRequestFactory;
+import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.bulk.BulkProcessor;
 import org.elasticsearch.action.bulk.BulkResponse;
@@ -47,11 +49,12 @@ public class ElasticsearchSystemProducerTest {
   private static final BulkProcessorFactory BULK_PROCESSOR_FACTORY = mock(BulkProcessorFactory.class);
   private static final Client CLIENT = mock(Client.class);
   private static final IndexRequestFactory INDEX_REQUEST_FACTORY = mock(IndexRequestFactory.class);
-  public static final String SOURCE_ONE = "one";
-  public static final String SOURCE_TWO = "two";
+  private static final ActionRequestFactory DELETE_REQUEST_FACTORY = mock(ActionRequestFactory.class);
+  private static final String SOURCE_ONE = "one";
+  private static final String SOURCE_TWO = "two";
   private SystemProducer producer;
-  public static BulkProcessor processorOne;
-  public static BulkProcessor processorTwo;
+  private static BulkProcessor processorOne;
+  private static BulkProcessor processorTwo;
   private ElasticsearchSystemProducerMetrics metrics;
 
   @Before
@@ -97,7 +100,7 @@ public class ElasticsearchSystemProducerTest {
 
     producer.send(SOURCE_ONE, envelope);
 
-    verify(processorOne).add(indexRequest);
+    verify(processorOne).add((ActionRequest)indexRequest);
   }
 
   @Test
