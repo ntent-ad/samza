@@ -17,7 +17,7 @@
  * under the License.
  */
  ext {
-  elasticsearchVersion = "2.1.1"
+  elasticsearchVersion = "5.3.3"
   jerseyVersion = "2.22.1"
   jodaTimeVersion = "2.2"
   joptSimpleVersion = "3.2"

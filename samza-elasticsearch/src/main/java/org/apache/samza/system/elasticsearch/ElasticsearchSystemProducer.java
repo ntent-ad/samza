@@ -27,6 +27,7 @@ import org.apache.samza.system.elasticsearch.indexrequest.IndexRequestFactory;
 import org.apache.samza.system.elasticsearch.indexrequest.IndexRequestFactoryWrapper;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionResponse;
+import org.elasticsearch.action.DocWriteResponse;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.bulk.BulkProcessor;
 import org.elasticsearch.action.bulk.BulkRequest;
@@ -35,7 +36,6 @@ import org.elasticsearch.action.delete.DeleteRequest;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.client.Client;
-import org.elasticsearch.client.ElasticsearchClient;
 import org.elasticsearch.rest.RestStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -156,7 +156,7 @@ public class ElasticsearchSystemProducer implements SystemProducer {
               ActionResponse resp = itemResp.getResponse();
               if (resp instanceof IndexResponse) {
                 writes += 1;
-                if (((IndexResponse) resp).isCreated()) {
+                if (((IndexResponse) resp).getResult().equals(DocWriteResponse.Result.CREATED)) {
                   metrics.inserts.inc();
                 } else {
                   metrics.updates.inc();
@@ -177,8 +177,10 @@ public class ElasticsearchSystemProducer implements SystemProducer {
   @Override
   public void send(String source, OutgoingMessageEnvelope envelope) {
     ActionRequest actionRequest = actionRequestFactory.getActionRequest(envelope);
-    if (actionRequest != null) {
-      sourceBulkProcessor.get(source).add(actionRequest);
+    if (actionRequest != null && actionRequest instanceof IndexRequest) {
+      sourceBulkProcessor.get(source).add((IndexRequest)actionRequest);
+    } else if (actionRequest != null && actionRequest instanceof DeleteRequest) {
+      sourceBulkProcessor.get(source).add((DeleteRequest)actionRequest);
     }
   }
 

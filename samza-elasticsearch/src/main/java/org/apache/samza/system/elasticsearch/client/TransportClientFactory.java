@@ -27,6 +27,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.elasticsearch.common.transport.TransportAddress;
+import org.elasticsearch.transport.client.PreBuiltTransportClient;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -71,12 +72,15 @@ public class TransportClientFactory implements ClientFactory {
 
   @Override
   public Client getClient() {
-    Settings settings = Settings.settingsBuilder()
+    Settings settings = Settings.builder()
         .put(clientSettings)
         .build();
 
     TransportAddress address = new InetSocketTransportAddress(transportHost, transportPort);
 
-    return TransportClient.builder().settings(settings).build().addTransportAddress(address);
+    TransportClient client = new PreBuiltTransportClient(settings);
+    client.addTransportAddress(address);
+
+    return client;
   }
 }
