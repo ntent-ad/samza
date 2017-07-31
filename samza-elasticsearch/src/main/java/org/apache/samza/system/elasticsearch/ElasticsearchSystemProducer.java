@@ -33,6 +33,7 @@ import org.elasticsearch.action.bulk.BulkProcessor;
 import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.action.delete.DeleteRequest;
+import org.elasticsearch.action.delete.DeleteResponse;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.client.Client;
@@ -161,9 +162,14 @@ public class ElasticsearchSystemProducer implements SystemProducer {
                 } else {
                   metrics.updates.inc();
                 }
+              } else if (resp instanceof DeleteResponse) {
+                writes += 1;
+                metrics.deletes.inc();
               } else {
                 LOGGER.error("Unexpected Elasticsearch action response type: " + resp.getClass().getSimpleName());
               }
+
+
             }
           }
           LOGGER.info(String.format("Wrote %s messages from %s to %s.",
