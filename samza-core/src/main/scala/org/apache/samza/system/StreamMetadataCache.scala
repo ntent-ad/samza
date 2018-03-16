@@ -19,11 +19,27 @@
 
 package org.apache.samza.system
 
-import org.apache.samza.util.Logging
+import org.apache.samza.config.Config
+import org.apache.samza.util.{Util, Logging, Clock, SystemClock}
 import org.apache.samza.SamzaException
-import org.apache.samza.util.{Clock, SystemClock}
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
+import org.apache.samza.config.SystemConfig.Config2System
 
+object StreamMetadataCache {
+  def apply(cacheTtlMs: Int = 5000, config: Config): StreamMetadataCache = {
+    val systemNames = config.getSystemNames.toSet
+    // Map the name of each system to the corresponding SystemAdmin
+    val systemAdmins = systemNames.map(systemName => {
+      val systemFactoryClassName = config
+        .getSystemFactory(systemName)
+        .getOrElse(throw new SamzaException("A stream uses system %s, which is missing from the configuration." format systemName))
+      val systemFactory = Util.getObj[SystemFactory](systemFactoryClassName)
+      systemName -> systemFactory.getAdmin(systemName, config)
+    }).toMap
+
+    new StreamMetadataCache(systemAdmins, cacheTtlMs, SystemClock.instance)
+  }
+}
 /**
  * Caches requests to SystemAdmin.getSystemStreamMetadata for a short while (by default
  * 5 seconds), so that we can make many metadata requests in quick succession without
@@ -64,11 +80,11 @@ class StreamMetadataCache (
           val systemAdmin = systemAdmins
             .getOrElse(systemName, throw new SamzaException("Cannot get metadata for unknown system: %s" format systemName))
           val streamToMetadata = if (partitionsMetadataOnly && systemAdmin.isInstanceOf[ExtendedSystemAdmin]) {
-            systemAdmin.asInstanceOf[ExtendedSystemAdmin].getSystemStreamPartitionCounts(systemStreams.map(_.getStream), cacheTTLms)
+            systemAdmin.asInstanceOf[ExtendedSystemAdmin].getSystemStreamPartitionCounts(systemStreams.map(_.getStream).asJava, cacheTTLms)
           } else {
-            systemAdmin.getSystemStreamMetadata(systemStreams.map(_.getStream))
+            systemAdmin.getSystemStreamMetadata(systemStreams.map(_.getStream).asJava)
           }
-          streamToMetadata.map {
+          streamToMetadata.asScala.map {
             case (streamName, metadata) => (new SystemStream(systemName, streamName) -> metadata)
           }
       }
@@ -82,6 +98,17 @@ class StreamMetadataCache (
       cacheMisses.foreach { case (stream, metadata) => addToCache(stream, metadata, time) }
     }
     allResults
+  }
+
+  /**
+   * Returns metadata about the given streams. If the metadata isn't in the cache, it is retrieved from the systems
+   * using the given SystemAdmins.
+   *
+   * @param stream SystemStreams for which the metadata is requested
+   * @param partitionsMetadataOnly Flag to indicate that only partition count metadata should be fetched/refreshed
+   */
+  def getSystemStreamMetadata(stream: SystemStream, partitionsMetadataOnly: Boolean): SystemStreamMetadata = {
+    getStreamMetadata(Set(stream), partitionsMetadataOnly).get(stream).orNull
   }
 
   private def getFromCache(stream: SystemStream, now: Long) = {

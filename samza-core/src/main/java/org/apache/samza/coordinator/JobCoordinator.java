@@ -23,44 +23,61 @@ import org.apache.samza.job.model.JobModel;
 
 /**
  *  A JobCoordinator is a pluggable module in each process that provides the JobModel and the ID to the StreamProcessor.
- *  In some cases, ID assignment is completely config driven, while in other cases, ID assignment may require
- *  coordination with JobCoordinators of other StreamProcessors.
- *  */
+ *
+ *  It is the responsibility of the JobCoordinator to assign a unique identifier to the StreamProcessor
+ *  based on the underlying environment. In some cases, ID assignment is completely config driven, while in other
+ *  cases, ID assignment may require coordination with JobCoordinators of other StreamProcessors.
+ *
+ *  StreamProcessor registers a {@link JobCoordinatorListener} in order to get notified about JobModel changes and
+ *  Coordinator state change.
+ *
+ * <pre>
+ *   {@code
+ *  *******************  start()                            ********************
+ *  *                 *----------------------------------->>*                  *
+ *  *                 *         onNewJobModel    ************                  *
+ *  *                 *<<------------------------* Job      *                  *
+ *  *                 *     onJobModelExpired    * Co-      *                  *
+ *  *                 *<<------------------------* ordinator*                  *
+ *  * StreamProcessor *     onCoordinatorStop    * Listener *  JobCoordinator  *
+ *  *                 *<<------------------------*          *                  *
+ *  *                 *  onCoordinatorFailure    *          *                  *
+ *  *                 *<<------------------------************                  *
+ *  *                 *  stop()                             *                  *
+ *  *                 *----------------------------------->>*                  *
+ *  *******************                                     ********************
+ *  }
+ *  </pre>
+ */
 @InterfaceStability.Evolving
 public interface JobCoordinator {
   /**
-   * Starts the JobCoordinator which involves one or more of the following:
-   * * LeaderElector Module initialization, if any
-   * * If leader, generate JobModel. Else, read JobModel
+   * Starts the JobCoordinator, which generally consists of participating in LeaderElection and listening for JobModel
+   * changes.
    */
   void start();
 
   /**
-   * Cleanly shutting down the JobCoordinator involves:
-   * * Shutting down the Container
-   * * Shutting down the LeaderElection module (TBD: details depending on leader or not)
+   * Stops the JobCoordinator and notifies the registered {@link JobCoordinatorListener}, if any
    */
   void stop();
 
   /**
-   * Waits for a specified amount of time for the JobCoordinator to fully start-up, which means it should be ready to
-   * process messages.
-   * In a Standalone use-case, it may be sufficient to wait for the container to start-up.
-   * In a ZK based Standalone use-case, it also includes registration with ZK, initialization of the
-   * leader elector module, container start-up etc.
+   * Returns the identifier assigned to the processor that is local to the instance of StreamProcessor.
    *
-   * @param timeoutMs Maximum time to wait, in milliseconds
-   * @return {@code true}, if the JobCoordinator is started within the specified wait time and {@code false} if the
-   * waiting time elapsed
-   * @throws InterruptedException if the current thread is interrupted while waiting for the JobCoordinator to start-up
+   * The semantics and format of the identifier returned should adhere to the specification defined in
+   * {@link org.apache.samza.runtime.ProcessorIdGenerator}
+   *
+   * @return String representing a unique logical processor ID
    */
-  boolean awaitStart(long timeoutMs) throws InterruptedException;
+  String getProcessorId();
+
   /**
-   * Returns the logical ID assigned to the processor
-   * It is up to the user to ensure that different instances of StreamProcessor within a job have unique processor ID.
-   * @return integer representing the logical processor ID
+   * Registers a {@link JobCoordinatorListener} to receive notification on coordinator state changes and job model changes
+   *
+   * @param listener An instance of {@link JobCoordinatorListener}
    */
-  int getProcessorId();
+  void setListener(JobCoordinatorListener listener);
 
   /**
    * Returns the current JobModel

@@ -20,9 +20,9 @@
 package org.apache.samza.config
 
 
+import java.util.concurrent.TimeUnit
 import org.apache.samza.SamzaException
-
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import org.apache.samza.util.Logging
 import org.apache.samza.util.Util
 
@@ -33,6 +33,13 @@ object StorageConfig {
   val MSG_SERDE = "stores.%s.msg.serde"
   val CHANGELOG_STREAM = "stores.%s.changelog"
   val CHANGELOG_SYSTEM = "job.changelog.system"
+  val CHANGELOG_DELETE_RETENTION_MS = "stores.%s.changelog.delete.retention.ms"
+  val DEFAULT_CHANGELOG_DELETE_RETENTION_MS = TimeUnit.DAYS.toMillis(1)
+  val ACCESSLOG_STREAM_SUFFIX = "access-log"
+  val ACCESSLOG_SAMPLING_RATIO = "stores.%s.accesslog.sampling.ratio"
+  val ACCESSLOG_ENABLED = "stores.%s.accesslog.enabled"
+  val DEFAULT_ACCESSLOG_SAMPLING_RATIO = 50
+
 
   implicit def Config2Storage(config: Config) = new StorageConfig(config)
 }
@@ -42,30 +49,40 @@ class StorageConfig(config: Config) extends ScalaMapConfig(config) with Logging 
   def getStorageFactoryClassName(name: String) = getOption(FACTORY.format(name))
   def getStorageKeySerde(name: String) = getOption(StorageConfig.KEY_SERDE format name)
   def getStorageMsgSerde(name: String) = getOption(StorageConfig.MSG_SERDE format name)
+
+  def getAccessLogEnabled(storeName: String) = {
+    getBoolean(ACCESSLOG_ENABLED format storeName, false)
+  }
+
   def getChangelogStream(name: String) = {
-    // If the config specifies 'stores.<storename>.changelog' as '<system>.<stream>' combination - it will take precedence.
-    // If this config only specifies <astream> and there is a value in job.changelog.system=<asystem> -
-    // these values will be combined into <asystem>.<astream>
-    val systemStream = getOption(CHANGELOG_STREAM format name)
-    val changelogSystem = getOption(CHANGELOG_SYSTEM)
-    val systemStreamRes =
-      if ( systemStream.isDefined  && ! systemStream.getOrElse("").contains('.')) {
-        // contains only stream name
-        if (changelogSystem.isDefined) {
-          Some(changelogSystem.get + "." + systemStream.get)
-        }
-        else {
-          throw new SamzaException("changelog system is not defined:" + systemStream.get)
-        }
-      } else {
-        systemStream
-      }
-    systemStreamRes
+    val javaStorageConfig = new JavaStorageConfig(config)
+    Option(javaStorageConfig.getChangelogStream(name))
+  }
+
+  //Returns the accesslog stream name given a changelog stream name
+  def getAccessLogStream(changeLogStream: String) = {
+    changeLogStream + "-" + ACCESSLOG_STREAM_SUFFIX
+  }
+
+  def getAccessLogSamplingRatio(storeName: String) = {
+    getInt(ACCESSLOG_SAMPLING_RATIO format storeName, DEFAULT_ACCESSLOG_SAMPLING_RATIO)
+  }
+
+  def getChangeLogDeleteRetentionInMs(storeName: String) = {
+    getLong(CHANGELOG_DELETE_RETENTION_MS format storeName, DEFAULT_CHANGELOG_DELETE_RETENTION_MS)
   }
 
   def getStoreNames: Seq[String] = {
     val conf = config.subset("stores.", true)
-    conf.keys.filter(k => k.endsWith(".factory")).map(k => k.substring(0, k.length - ".factory".length)).toSeq
+    conf.asScala.keys.filter(k => k.endsWith(".factory")).map(k => k.substring(0, k.length - ".factory".length)).toSeq
+  }
+
+  /**
+    * Build a map of storeName to changeLogDeleteRetention for all of the stores.
+    * @return a map from storeName to the changeLogDeleteRetention of the store in ms.
+    */
+  def getChangeLogDeleteRetentionsInMs: Map[String, Long] = {
+    Map(getStoreNames map {storeName => (storeName, getChangeLogDeleteRetentionInMs(storeName))} : _*)
   }
 
   /**
@@ -80,5 +97,13 @@ class StorageConfig(config: Config) extends ScalaMapConfig(config) with Logging 
       // Convert "system.stream" to systemName
       .map(systemStreamName => Util.getSystemStreamFromNames(systemStreamName.get).getSystem)
       .contains(systemName)
+  }
+
+  /**
+    * Helper method to check if there is any stores configured w/ a changelog
+    */
+  def hasDurableStores : Boolean = {
+    val conf = config.subset("stores.", true)
+    conf.asScala.keys.exists(k => k.endsWith(".changelog"))
   }
 }

@@ -19,7 +19,6 @@
 
 package org.apache.samza.operators.triggers;
 
-import org.apache.samza.operators.data.MessageEnvelope;
 
 import java.time.Duration;
 
@@ -27,7 +26,7 @@ import java.time.Duration;
  * A {@link Trigger} that fires after the specified duration has passed since the first {@link MessageEnvelope} in
  * the window pane.
  */
-public class TimeSinceFirstMessageTrigger<M extends MessageEnvelope> implements Trigger {
+public class TimeSinceFirstMessageTrigger<M> implements Trigger<M>, TimeBasedTrigger<M> {
 
   private final Duration duration;
   private final DurationCharacteristic characteristic = DurationCharacteristic.PROCESSING_TIME;
@@ -36,6 +35,7 @@ public class TimeSinceFirstMessageTrigger<M extends MessageEnvelope> implements 
     this.duration = duration;
   }
 
+  @Override
   public Duration getDuration() {
     return duration;
   }

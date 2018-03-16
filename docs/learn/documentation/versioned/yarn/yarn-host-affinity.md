@@ -45,7 +45,7 @@ ls ${container_working_dir}/state/${store-name}/${task_name}/
 
 This allows the Node Manager's (NM) DeletionService to clean-up the working directory once the application completes or fails. In order to re-use local state store, the state store needs to be persisted outside the scope of NM's deletion service. The cluster administrator should set this location as an environment variable in Yarn - <code>LOGGED\_STORE\_BASE\_DIR</code>.
 
-![samza-host-affinity](/img/{{site.version}}/learn/documentation/yarn/samza-host-affinity.png)
+<img src="/img/{{site.version}}/learn/documentation/yarn/samza-host-affinity.png" alt="Yarn host affinity component diagram" style="max-width: 100%; height: auto;" onclick="window.open(this.src)"/>
 
 Each time a task commits, Samza writes the last materialized offset from the changelog stream to the checksumed file on disk. This is also done on container shutdown. Thus, there is an *OFFSET* file associated with each state stores' changelog partitions, that is consumed by the tasks in the container.
 
@@ -119,4 +119,4 @@ As you have observed, host-affinity cannot be guaranteed all the time due to var
 1. _When the number of containers and/or container-task assignment changes across successive application runs_ - We may be able to re-use local state for a subset of partitions. Currently, there is no logic in the Job Coordinator to handle partitioning of tasks among containers intelligently. Handling this is more involved as relates to [auto-scaling](https://issues.apache.org/jira/browse/SAMZA-336) of the containers. However, with [task-container mapping](https://issues.apache.org/jira/browse/SAMZA-906), this will work better for typical container count adjustments.
 2. _When SystemStreamPartitionGrouper changes across successive application runs_ - When the grouper logic used to distribute the partitions across containers changes, the data in the Coordinator Stream (for changelog-task partition assignment etc) and the data stores becomes invalid. Thus, to be safe, we should flush out all state-related data from the Coordinator Stream. An alternative is to overwrite the Task-ChangelogPartition assignment message and the Container Locality message in the Coordinator Stream, before starting up the job again.
 
-## [Writing to HDFS &raquo;](../hdfs/producer.html)
+## [Resource Localization &raquo;](../yarn/yarn-resource-localization.html)

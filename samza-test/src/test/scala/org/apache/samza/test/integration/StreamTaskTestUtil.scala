@@ -35,7 +35,7 @@ import org.apache.samza.Partition
 import org.apache.samza.checkpoint.Checkpoint
 import org.apache.kafka.common.protocol.SecurityProtocol
 import org.apache.kafka.common.security.JaasUtils
-import org.apache.samza.config.{Config, KafkaProducerConfig, MapConfig}
+import org.apache.samza.config.{ApplicationConfig, Config, KafkaProducerConfig, MapConfig}
 import org.apache.samza.container.TaskName
 import org.apache.samza.job.local.ThreadJobFactory
 import org.apache.samza.job.{ApplicationStatus, JobRunner, StreamJob}
@@ -45,7 +45,7 @@ import org.apache.samza.task._
 import org.apache.samza.util.{ClientUtilTopicMetadataStore, KafkaUtil, TopicMetadataStore}
 import org.junit.Assert._
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.collection.mutable.{ArrayBuffer, Buffer, HashMap, SynchronizedMap}
 
 /*
@@ -70,8 +70,8 @@ object StreamTaskTestUtil {
   def zkConnect: String = s"127.0.0.1:$zkPort"
 
   var producer: Producer[Array[Byte], Array[Byte]] = null
-  val cp1 = new Checkpoint(Map(new SystemStreamPartition("kafka", "topic", new Partition(0)) -> "123"))
-  val cp2 = new Checkpoint(Map(new SystemStreamPartition("kafka", "topic", new Partition(0)) -> "12345"))
+  val cp1 = new Checkpoint(Map(new SystemStreamPartition("kafka", "topic", new Partition(0)) -> "123").asJava)
+  val cp2 = new Checkpoint(Map(new SystemStreamPartition("kafka", "topic", new Partition(0)) -> "12345").asJava)
 
   var metadataStore: TopicMetadataStore = null
 
@@ -81,6 +81,7 @@ object StreamTaskTestUtil {
   var jobConfig = Map(
     "job.factory.class" -> classOf[ThreadJobFactory].getCanonicalName,
     "job.coordinator.system" -> "kafka",
+    ApplicationConfig.PROCESSOR_ID -> "1",
     "task.inputs" -> "kafka.input",
     "serializers.registry.string.class" -> "org.apache.samza.serializers.StringSerdeFactory",
     "systems.kafka.samza.factory" -> "org.apache.samza.system.kafka.KafkaSystemFactory",
@@ -89,8 +90,6 @@ object StreamTaskTestUtil {
     "systems.kafka.samza.offset.default" -> "oldest", // applies to a nonempty topic
     "systems.kafka.consumer.auto.offset.reset" -> "smallest", // applies to an empty topic
     "systems.kafka.samza.msg.serde" -> "string",
-    "systems.kafka.consumer.zookeeper.connect" -> "localhost:2181",
-    "systems.kafka.producer.bootstrap.servers" -> "localhost:9092",
     // Since using state, need a checkpoint manager
     "task.checkpoint.factory" -> "org.apache.samza.checkpoint.kafka.KafkaCheckpointManagerFactory",
     "task.checkpoint.system" -> "kafka",
@@ -120,18 +119,20 @@ object StreamTaskTestUtil {
     servers = configs.map(TestUtils.createServer(_)).toBuffer
 
     val brokerList = TestUtils.getBrokerListStrFromServers(servers, SecurityProtocol.PLAINTEXT)
-    brokers = brokerList.split(",").map(p => "localhost" + p).mkString(",")
+    brokers = brokerList.split(",").map(p => "127.0.0.1" + p).mkString(",")
 
+    // setup the zookeeper and bootstrap servers for local kafka cluster
     jobConfig ++= Map("systems.kafka.consumer.zookeeper.connect" -> zkConnect,
       "systems.kafka.producer.bootstrap.servers" -> brokers)
 
-    val config = new util.HashMap[String, Object]()
+    val config = new util.HashMap[String, String]()
 
     config.put("bootstrap.servers", brokers)
     config.put("request.required.acks", "-1")
     config.put("serializer.class", "kafka.serializer.StringEncoder")
     config.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "1")
     config.put(ProducerConfig.RETRIES_CONFIG, (new Integer(Integer.MAX_VALUE-1)).toString())
+    config.put(ProducerConfig.LINGER_MS_CONFIG, "0")
     val producerConfig = new KafkaProducerConfig("kafka", "i001", config)
 
     producer = new KafkaProducer[Array[Byte], Array[Byte]](producerConfig.getProducerProperties)
@@ -204,7 +205,7 @@ class StreamTaskTestUtil {
    */
   def startJob = {
     // Start task.
-    val job = new JobRunner(new MapConfig(jobConfig)).run()
+    val job = new JobRunner(new MapConfig(jobConfig.asJava)).run()
     assertEquals(ApplicationStatus.Running, job.waitForStatus(ApplicationStatus.Running, 60000))
     TestTask.awaitTaskRegistered
     val tasks = TestTask.tasks
@@ -222,7 +223,8 @@ class StreamTaskTestUtil {
   def stopJob(job: StreamJob) {
     // Shutdown task.
     job.kill
-    assertEquals(ApplicationStatus.UnsuccessfulFinish, job.waitForFinish(60000))
+    val status = job.waitForFinish(60000)
+    assertEquals(ApplicationStatus.UnsuccessfulFinish, status)
   }
 
   /**
@@ -247,7 +249,7 @@ class StreamTaskTestUtil {
 
     val consumerConfig = new ConsumerConfig(props)
     val consumerConnector = Consumer.create(consumerConfig)
-    var stream = consumerConnector.createMessageStreams(Map(topic -> 1)).get(topic).get.get(0).iterator
+    val stream = consumerConnector.createMessageStreams(Map(topic -> 1))(topic).head.iterator
     var message: MessageAndMetadata[Array[Byte], Array[Byte]] = null
     var messages = ArrayBuffer[String]()
 

@@ -19,27 +19,8 @@
 
 package org.apache.samza.test.processor;
 
-import kafka.utils.TestUtils;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.samza.SamzaException;
-import org.apache.samza.config.Config;
-import org.apache.samza.config.MapConfig;
-import org.apache.samza.processor.StreamProcessor;
-import org.apache.samza.task.AsyncStreamTaskAdapter;
-import org.apache.samza.task.AsyncStreamTaskFactory;
-import org.apache.samza.task.StreamTaskFactory;
-import org.apache.samza.test.StandaloneIntegrationTestHarness;
-import org.apache.samza.test.StandaloneTestUtils;
-import org.junit.Assert;
-import org.junit.Test;
-
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
@@ -47,14 +28,42 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import kafka.utils.TestUtils;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.protocol.SecurityProtocol;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.samza.SamzaException;
+import org.apache.samza.config.Config;
+import org.apache.samza.config.MapConfig;
+import org.apache.samza.config.ZkConfig;
+import org.apache.samza.processor.StreamProcessor;
+import org.apache.samza.processor.StreamProcessorLifecycleListener;
+import org.apache.samza.task.AsyncStreamTaskAdapter;
+import org.apache.samza.task.AsyncStreamTaskFactory;
+import org.apache.samza.task.StreamTaskFactory;
+import org.apache.samza.test.StandaloneIntegrationTestHarness;
+import org.apache.samza.test.StandaloneTestUtils;
+import org.junit.Assert;
+import org.junit.Test;
+import scala.Option$;
 
-import static org.apache.samza.test.processor.IdentityStreamTask.endLatch;
+import static org.mockito.Matchers.anyObject;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
+
 
 public class TestStreamProcessor extends StandaloneIntegrationTestHarness {
   /**
    * Testing a basic identity stream task - reads data from a topic and writes it to another topic
    * (without any modifications)
    *
+   * <p>
    * The standalone version in this test uses KafkaSystemFactory and it uses a SingleContainerGrouperFactory. Hence,
    * no matter how many tasks are present, it will always be run in a single processor instance. This simplifies testing
    */
@@ -65,15 +74,15 @@ public class TestStreamProcessor extends StandaloneIntegrationTestHarness {
     final String outputTopic = "output";
     final int messageCount = 20;
 
-    final Config configs = new MapConfig(createConfigs(testSystem, inputTopic, outputTopic, messageCount));
+    final Config configs = new MapConfig(createConfigs("1", testSystem, inputTopic, outputTopic, messageCount));
     // Note: createTopics needs to be called before creating a StreamProcessor. Otherwise it fails with a
     // TopicExistsException since StreamProcessor auto-creates them.
     createTopics(inputTopic, outputTopic);
-    final StreamProcessor processor = new StreamProcessor(1, new MapConfig(configs), new HashMap<>());
+    final TestStubs stubs = new TestStubs(configs, IdentityStreamTask::new, bootstrapServers());
 
-    produceMessages(inputTopic, messageCount);
-    run(processor, endLatch);
-    verifyNumMessages(outputTopic, messageCount);
+    produceMessages(stubs.producer, inputTopic, messageCount);
+    run(stubs.processor, stubs.shutdownLatch);
+    verifyNumMessages(stubs.consumer, outputTopic, messageCount);
   }
 
   /**
@@ -86,14 +95,13 @@ public class TestStreamProcessor extends StandaloneIntegrationTestHarness {
     final String outputTopic = "output2";
     final int messageCount = 20;
 
-    final Config configs = new MapConfig(createConfigs(testSystem, inputTopic, outputTopic, messageCount));
+    final Config configs = new MapConfig(createConfigs("1", testSystem, inputTopic, outputTopic, messageCount));
     createTopics(inputTopic, outputTopic);
-    final StreamTaskFactory stf = IdentityStreamTask::new;
-    final StreamProcessor processor = new StreamProcessor(1, configs, new HashMap<>(), stf);
+    final TestStubs stubs = new TestStubs(configs, IdentityStreamTask::new, bootstrapServers());
 
-    produceMessages(inputTopic, messageCount);
-    run(processor, endLatch);
-    verifyNumMessages(outputTopic, messageCount);
+    produceMessages(stubs.producer, inputTopic, messageCount);
+    run(stubs.processor, stubs.shutdownLatch);
+    verifyNumMessages(stubs.consumer, outputTopic, messageCount);
   }
 
   /**
@@ -106,15 +114,15 @@ public class TestStreamProcessor extends StandaloneIntegrationTestHarness {
     final String outputTopic = "output3";
     final int messageCount = 20;
 
-    final Config configs = new MapConfig(createConfigs(testSystem, inputTopic, outputTopic, messageCount));
+    final Config configs = new MapConfig(createConfigs("1", testSystem, inputTopic, outputTopic, messageCount));
     final ExecutorService executorService = Executors.newSingleThreadExecutor();
     createTopics(inputTopic, outputTopic);
     final AsyncStreamTaskFactory stf = () -> new AsyncStreamTaskAdapter(new IdentityStreamTask(), executorService);
-    final StreamProcessor processor = new StreamProcessor(1, configs, new HashMap<>(), stf);
+    final TestStubs stubs = new TestStubs(configs, stf, bootstrapServers());
 
-    produceMessages(inputTopic, messageCount);
-    run(processor, endLatch);
-    verifyNumMessages(outputTopic, messageCount);
+    produceMessages(stubs.producer, inputTopic, messageCount);
+    run(stubs.processor, stubs.shutdownLatch);
+    verifyNumMessages(stubs.consumer, outputTopic, messageCount);
     executorService.shutdownNow();
   }
 
@@ -128,12 +136,12 @@ public class TestStreamProcessor extends StandaloneIntegrationTestHarness {
     final String outputTopic = "output4";
     final int messageCount = 20;
 
-    final Map<String, String> configMap = createConfigs(testSystem, inputTopic, outputTopic, messageCount);
+    final Map<String, String> configMap = createConfigs("1", testSystem, inputTopic, outputTopic, messageCount);
     configMap.remove("task.class");
     final Config configs = new MapConfig(configMap);
+    final TestStubs stubs = new TestStubs(configs, (StreamTaskFactory) null, bootstrapServers());
 
-    StreamProcessor processor = new StreamProcessor(1, configs, new HashMap<>());
-    run(processor, endLatch);
+    run(stubs.processor, stubs.shutdownLatch);
   }
 
   private void createTopics(String inputTopic, String outputTopic) {
@@ -141,32 +149,26 @@ public class TestStreamProcessor extends StandaloneIntegrationTestHarness {
     TestUtils.createTopic(zkUtils(), outputTopic, 1, 1, servers(), new Properties());
   }
 
-  private Map<String, String> createConfigs(String testSystem, String inputTopic, String outputTopic, int messageCount) {
+  private Map<String, String> createConfigs(String processorId, String testSystem, String inputTopic, String outputTopic, int messageCount) {
     Map<String, String> configs = new HashMap<>();
     configs.putAll(
-        StandaloneTestUtils.getStandaloneConfigs(
-            "test-job",
-            "org.apache.samza.test.processor.IdentityStreamTask"));
-    configs.putAll(
-        StandaloneTestUtils.getKafkaSystemConfigs(
-            testSystem,
-            bootstrapServers(),
-            zkConnect(),
-            null,
-            StandaloneTestUtils.SerdeAlias.STRING,
-            true));
+        StandaloneTestUtils.getStandaloneConfigs("test-job", "org.apache.samza.test.processor.IdentityStreamTask"));
+    configs.putAll(StandaloneTestUtils.getKafkaSystemConfigs(testSystem, bootstrapServers(), zkConnect(), null,
+            StandaloneTestUtils.SerdeAlias.STRING, true));
     configs.put("task.inputs", String.format("%s.%s", testSystem, inputTopic));
     configs.put("app.messageCount", String.valueOf(messageCount));
     configs.put("app.outputTopic", outputTopic);
     configs.put("app.outputSystem", testSystem);
+    configs.put(ZkConfig.ZK_CONNECT, zkConnect());
+    configs.put("processor.id", processorId);
     return configs;
   }
 
   /**
    * Produces the provided number of messages to the topic.
    */
-  private void produceMessages(String topic, int numMessages) {
-    KafkaProducer producer = getKafkaProducer();
+  @SuppressWarnings("unchecked")
+  private void produceMessages(KafkaProducer producer, String topic, int numMessages) {
     for (int i = 0; i < numMessages; i++) {
       try {
         producer.send(new ProducerRecord(topic, String.valueOf(i).getBytes())).get();
@@ -184,7 +186,6 @@ public class TestStreamProcessor extends StandaloneIntegrationTestHarness {
     boolean latchResult = false;
     processor.start();
     try {
-      processor.awaitStart(10000);
       latchResult = latch.await(10, TimeUnit.SECONDS);
     } catch (InterruptedException e) {
       e.printStackTrace();
@@ -200,8 +201,8 @@ public class TestStreamProcessor extends StandaloneIntegrationTestHarness {
    * Consumes data from the topic until there are no new messages for a while
    * and asserts that the number of consumed messages is as expected.
    */
-  private void verifyNumMessages(String topic, int expectedNumMessages) {
-    KafkaConsumer consumer = getKafkaConsumer();
+  @SuppressWarnings("unchecked")
+  private void verifyNumMessages(KafkaConsumer consumer, String topic, int expectedNumMessages) {
     consumer.subscribe(Collections.singletonList(topic));
 
     int count = 0;
@@ -210,9 +211,7 @@ public class TestStreamProcessor extends StandaloneIntegrationTestHarness {
     while (count < expectedNumMessages && emptyPollCount < 5) {
       ConsumerRecords records = consumer.poll(5000);
       if (!records.isEmpty()) {
-        Iterator<ConsumerRecord> iterator = records.iterator();
-        while (iterator.hasNext()) {
-          ConsumerRecord record = iterator.next();
+        for (ConsumerRecord record : (Iterable<ConsumerRecord>) records) {
           Assert.assertEquals(new String((byte[]) record.value()), String.valueOf(count));
           count++;
         }
@@ -222,5 +221,75 @@ public class TestStreamProcessor extends StandaloneIntegrationTestHarness {
     }
 
     Assert.assertEquals(count, expectedNumMessages);
+  }
+
+  /**
+   * A wrapper class to consolidate all the components required to be either mocked or stubbed prior to unit testing
+   * the stream processor.
+   */
+  private static class TestStubs {
+    CountDownLatch shutdownLatch;
+    KafkaConsumer consumer;
+    KafkaProducer producer;
+    StreamProcessor processor;
+    StreamProcessorLifecycleListener listener;
+
+    private TestStubs(String bootstrapServer) {
+      shutdownLatch = new CountDownLatch(1);
+      initProcessorListener();
+      initConsumer(bootstrapServer);
+      initProducer(bootstrapServer);
+    }
+
+    TestStubs(Config config, StreamTaskFactory taskFactory, String bootstrapServer) {
+      this(bootstrapServer);
+      processor = new StreamProcessor(config, new HashMap<>(), taskFactory, listener);
+    }
+
+    TestStubs(Config config, AsyncStreamTaskFactory taskFactory, String bootstrapServer) {
+      this(bootstrapServer);
+      processor = new StreamProcessor(config, new HashMap<>(), taskFactory, listener);
+    }
+
+    private void initConsumer(String bootstrapServer) {
+      consumer = TestUtils.createNewConsumer(
+          bootstrapServer,
+          "group",
+          "earliest",
+          4096L,
+          "org.apache.kafka.clients.consumer.RangeAssignor",
+          30000,
+          SecurityProtocol.PLAINTEXT,
+          Option$.MODULE$.empty(),
+          Option$.MODULE$.empty(),
+          Option$.MODULE$.empty());
+    }
+
+    private void initProcessorListener() {
+      listener = mock(StreamProcessorLifecycleListener.class);
+      doNothing().when(listener).onStart();
+      doNothing().when(listener).onFailure(anyObject());
+      doAnswer(invocation -> {
+          shutdownLatch.countDown();
+          return null;
+        }).when(listener).onShutdown();
+    }
+
+    private void initProducer(String bootstrapServer) {
+      producer = TestUtils.createNewProducer(
+          bootstrapServer,
+          1,
+          60 * 1000L,
+          1024L * 1024L,
+          0,
+          0L,
+          5 * 1000L,
+          SecurityProtocol.PLAINTEXT,
+          null,
+          Option$.MODULE$.apply(new Properties()),
+          new StringSerializer(),
+          new ByteArraySerializer(),
+          Option$.MODULE$.apply(new Properties()));
+    }
   }
 }

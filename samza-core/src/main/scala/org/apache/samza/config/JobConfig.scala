@@ -23,7 +23,6 @@ package org.apache.samza.config
 import java.io.File
 
 import org.apache.samza.container.grouper.stream.GroupByPartitionFactory
-import org.apache.samza.system.{RegexSystemStreamPartitionMatcher, SystemStreamPartitionMatcher}
 import org.apache.samza.util.Logging
 
 object JobConfig {
@@ -43,26 +42,29 @@ object JobConfig {
   val SAMZA_FWK_PATH = "samza.fwk.path"
   val SAMZA_FWK_VERSION = "samza.fwk.version"
   val JOB_COORDINATOR_SYSTEM = "job.coordinator.system"
+  val JOB_DEFAULT_SYSTEM = "job.default.system"
   val JOB_CONTAINER_COUNT = "job.container.count"
-  val jOB_CONTAINER_THREAD_POOL_SIZE = "job.container.thread.pool.size"
+  val JOB_CONTAINER_THREAD_POOL_SIZE = "job.container.thread.pool.size"
   val JOB_CONTAINER_SINGLE_THREAD_MODE = "job.container.single.thread.mode"
-  val JOB_REPLICATION_FACTOR = "job.coordinator.replication.factor"
-  val JOB_SEGMENT_BYTES = "job.coordinator.segment.bytes"
+  val JOB_INTERMEDIATE_STREAM_PARTITIONS = "job.intermediate.stream.partitions"
+  val JOB_DEBOUNCE_TIME_MS = "job.debounce.time.ms"
+  val DEFAULT_DEBOUNCE_TIME_MS = 20000
+
   val SSP_GROUPER_FACTORY = "job.systemstreampartition.grouper.factory"
 
-  val SSP_MATCHER_CLASS = "job.systemstreampartition.matcher.class";
+  val SSP_MATCHER_CLASS = "job.systemstreampartition.matcher.class"
 
   val SSP_MATCHER_CLASS_REGEX = "org.apache.samza.system.RegexSystemStreamPartitionMatcher"
 
   val SSP_MATCHER_CLASS_RANGE = "org.apache.samza.system.RangeSystemStreamPartitionMatcher"
 
-  val SSP_MATCHER_CONFIG_REGEX = "job.systemstreampartition.matcher.config.regex";
+  val SSP_MATCHER_CONFIG_REGEX = "job.systemstreampartition.matcher.config.regex"
 
-  val SSP_MATCHER_CONFIG_RANGES = "job.systemstreampartition.matcher.config.ranges";
+  val SSP_MATCHER_CONFIG_RANGES = "job.systemstreampartition.matcher.config.ranges"
 
-  val SSP_MATCHER_CONFIG_JOB_FACTORY_REGEX = "job.systemstreampartition.matcher.config.job.factory.regex";
+  val SSP_MATCHER_CONFIG_JOB_FACTORY_REGEX = "job.systemstreampartition.matcher.config.job.factory.regex"
 
-  val DEFAULT_SSP_MATCHER_CONFIG_JOB_FACTORY_REGEX = "org\\.apache\\.samza\\.job\\.local(.*ProcessJobFactory|.*ThreadJobFactory)";
+  val DEFAULT_SSP_MATCHER_CONFIG_JOB_FACTORY_REGEX = "org\\.apache\\.samza\\.job\\.local(.*ProcessJobFactory|.*ThreadJobFactory)"
 
   // number of partitions in the checkpoint stream should be 1. But sometimes,
   // if a stream was created(automatically) with the wrong number of partitions(default number of partitions
@@ -77,6 +79,7 @@ object JobConfig {
 
   // Processor Config Constants
   val PROCESSOR_ID = "processor.id"
+  val PROCESSOR_LIST = "processor.list"
 
   implicit def Config2Job(config: Config) = new JobConfig(config)
 
@@ -101,8 +104,24 @@ object JobConfig {
 class JobConfig(config: Config) extends ScalaMapConfig(config) with Logging {
   def getName = getOption(JobConfig.JOB_NAME)
 
-  def getCoordinatorSystemName = getOption(JobConfig.JOB_COORDINATOR_SYSTEM).getOrElse(
-      throw new ConfigException("Missing job.coordinator.system configuration. Cannot proceed with job execution."))
+  def getCoordinatorSystemName = {
+    val system = getCoordinatorSystemNameOrNull
+    if (system == null) {
+      throw new ConfigException("Missing job.coordinator.system configuration. Cannot proceed with job execution.")
+    }
+    system
+  }
+
+  /**
+    * Gets the System to use for reading/writing the coordinator stream. Uses the following precedence.
+    *
+    * 1. If job.coordinator.system is defined, that value is used.
+    * 2. If job.default.system is defined, that value is used.
+    * 3. None
+    */
+  def getCoordinatorSystemNameOrNull =  getOption(JobConfig.JOB_COORDINATOR_SYSTEM).getOrElse(getDefaultSystem.orNull)
+
+  def getDefaultSystem = getOption(JobConfig.JOB_DEFAULT_SYSTEM)
 
   def getContainerCount = {
     getOption(JobConfig.JOB_CONTAINER_COUNT) match {
@@ -118,8 +137,6 @@ class JobConfig(config: Config) extends ScalaMapConfig(config) with Logging {
         }
     }
   }
-
-  def getMonitorPartitionChange = getBoolean(JobConfig.MONITOR_PARTITION_CHANGE, false)
 
   def getMonitorPartitionChangeFrequency = getInt(
     JobConfig.MONITOR_PARTITION_CHANGE_FREQUENCY_MS,
@@ -139,31 +156,6 @@ class JobConfig(config: Config) extends ScalaMapConfig(config) with Logging {
 
   def getSecurityManagerFactory = getOption(JobConfig.JOB_SECURITY_MANAGER_FACTORY)
 
-  val CHECKPOINT_SEGMENT_BYTES = "task.checkpoint.segment.bytes"
-  val CHECKPOINT_REPLICATION_FACTOR = "task.checkpoint.replication.factor"
-
-  def getCoordinatorReplicationFactor = getOption(JobConfig.JOB_REPLICATION_FACTOR) match {
-    case Some(rplFactor) => rplFactor
-    case _ =>
-      getOption(CHECKPOINT_REPLICATION_FACTOR) match {
-        case Some(rplFactor) =>
-          info("%s was not found. Using %s=%s for coordinator stream" format (JobConfig.JOB_REPLICATION_FACTOR, CHECKPOINT_REPLICATION_FACTOR, rplFactor))
-          rplFactor
-        case _ => "3"
-      }
-  }
-
-  def getCoordinatorSegmentBytes = getOption(JobConfig.JOB_SEGMENT_BYTES) match {
-    case Some(segBytes) => segBytes
-    case _ =>
-      getOption(CHECKPOINT_SEGMENT_BYTES) match {
-        case Some(segBytes) =>
-          info("%s was not found. Using %s=%s for coordinator stream" format (JobConfig.JOB_SEGMENT_BYTES, CHECKPOINT_SEGMENT_BYTES, segBytes))
-          segBytes
-        case _ => "26214400"
-      }
-  }
-
   def getSSPMatcherClass = getOption(JobConfig.SSP_MATCHER_CLASS)
 
   def getSSPMatcherConfigRegex = getExcept(JobConfig.SSP_MATCHER_CONFIG_REGEX)
@@ -172,7 +164,7 @@ class JobConfig(config: Config) extends ScalaMapConfig(config) with Logging {
 
   def getSSPMatcherConfigJobFactoryRegex = getOrElse(JobConfig.SSP_MATCHER_CONFIG_JOB_FACTORY_REGEX, JobConfig.DEFAULT_SSP_MATCHER_CONFIG_JOB_FACTORY_REGEX)
 
-  def getThreadPoolSize = getOption(JobConfig.jOB_CONTAINER_THREAD_POOL_SIZE) match {
+  def getThreadPoolSize = getOption(JobConfig.JOB_CONTAINER_THREAD_POOL_SIZE) match {
     case Some(size) => size.toInt
     case _ => 0
   }
@@ -181,4 +173,6 @@ class JobConfig(config: Config) extends ScalaMapConfig(config) with Logging {
     case Some(mode) => mode.toBoolean
     case _ => false
   }
+
+  def getDebounceTimeMs = getInt(JobConfig.JOB_DEBOUNCE_TIME_MS, JobConfig.DEFAULT_DEBOUNCE_TIME_MS)
 }

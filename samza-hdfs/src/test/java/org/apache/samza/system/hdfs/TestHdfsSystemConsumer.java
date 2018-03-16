@@ -31,6 +31,7 @@ import java.util.Set;
 
 import org.apache.avro.generic.GenericRecord;
 import org.apache.samza.Partition;
+import org.apache.samza.SamzaException;
 import org.apache.samza.config.Config;
 import org.apache.samza.config.MapConfig;
 import org.apache.samza.system.IncomingMessageEnvelope;
@@ -39,9 +40,10 @@ import org.apache.samza.system.SystemStreamPartition;
 import org.apache.samza.system.hdfs.reader.TestAvroFileHdfsReader;
 import org.apache.samza.util.NoOpMetricsRegistry;
 import org.junit.Assert;
+import org.junit.Ignore;
 import org.junit.Test;
 
-
+import com.google.common.util.concurrent.UncheckedExecutionException;
 
 
 public class TestHdfsSystemConsumer {
@@ -76,7 +78,7 @@ public class TestHdfsSystemConsumer {
    * partitioner, system consumer, and so on, making sure the basic functionality
    * works as expected.
    */
-  @Test
+  @Ignore
   public void testHdfsSystemConsumerE2E() throws Exception {
     Config config = generateDefaultConfig();
     HdfsSystemFactory systemFactory = new HdfsSystemFactory();
@@ -106,11 +108,11 @@ public class TestHdfsSystemConsumer {
     // verify events read from consumer
     int eventsReceived = 0;
     int totalEvents = (NUM_EVENTS + 1) * NUM_FILES; // one "End of Stream" event in the end
-    int remainingRetires = 100;
+    int remainingRetries = 100;
     Map<SystemStreamPartition, List<IncomingMessageEnvelope>> overallResults = new HashMap<>();
-    while (eventsReceived < totalEvents && remainingRetires > 0) {
-      remainingRetires--;
-      Map<SystemStreamPartition, List<IncomingMessageEnvelope>> result = systemConsumer.poll(systemStreamPartitionSet, 200);
+    while (eventsReceived < totalEvents && remainingRetries > 0) {
+      remainingRetries--;
+      Map<SystemStreamPartition, List<IncomingMessageEnvelope>> result = systemConsumer.poll(systemStreamPartitionSet, 1000);
       for(SystemStreamPartition ssp : result.keySet()) {
         List<IncomingMessageEnvelope> messageEnvelopeList = result.get(ssp);
         overallResults.putIfAbsent(ssp, new ArrayList<>());
@@ -121,7 +123,7 @@ public class TestHdfsSystemConsumer {
         eventsReceived += messageEnvelopeList.size();
       }
     }
-    Assert.assertEquals(eventsReceived, totalEvents);
+    Assert.assertEquals("Did not receive all the events. Retry counter = " + remainingRetries, totalEvents, eventsReceived);
     Assert.assertEquals(NUM_FILES, overallResults.size());
     overallResults.values().forEach(messages -> {
       Assert.assertEquals(NUM_EVENTS + 1, messages.size());
@@ -132,5 +134,38 @@ public class TestHdfsSystemConsumer {
       }
       Assert.assertEquals(messages.get(NUM_EVENTS).getOffset(), IncomingMessageEnvelope.END_OF_STREAM_OFFSET);
     });
+  }
+
+  /*
+   * Ensure that empty staging directory will not break system admin,
+   * but should fail system consumer
+   */
+  @Test
+  public void testEmptyStagingDirectory() throws Exception {
+    Map<String, String> configMap = new HashMap<>();
+    configMap.put(String.format(HdfsConfig.CONSUMER_PARTITIONER_WHITELIST(), SYSTEM_NAME), ".*avro");
+    Config config = new MapConfig(configMap);
+    HdfsSystemFactory systemFactory = new HdfsSystemFactory();
+
+    // create admin and do partitioning
+    HdfsSystemAdmin systemAdmin = systemFactory.getAdmin(SYSTEM_NAME, config);
+    String stream = WORKING_DIRECTORY;
+    Set<String> streamNames = new HashSet<>();
+    streamNames.add(stream);
+    generateAvroDataFiles();
+    Map<String, SystemStreamMetadata> streamMetadataMap = systemAdmin.getSystemStreamMetadata(streamNames);
+    SystemStreamMetadata systemStreamMetadata = streamMetadataMap.get(stream);
+    Assert.assertEquals(NUM_FILES, systemStreamMetadata.getSystemStreamPartitionMetadata().size());
+
+    // create consumer and read from files
+    HdfsSystemConsumer systemConsumer = systemFactory.getConsumer(SYSTEM_NAME, config, new NoOpMetricsRegistry());
+    Partition partition = new Partition(0);
+    SystemStreamPartition ssp = new SystemStreamPartition(SYSTEM_NAME, stream, partition);
+    try {
+      systemConsumer.register(ssp, "0");
+      Assert.fail("Empty staging directory should fail system consumer");
+    } catch (UncheckedExecutionException e) {
+      Assert.assertTrue(e.getCause() instanceof SamzaException);
+    }
   }
 }

@@ -36,10 +36,12 @@ object TaskConfig {
   val MESSAGE_CHOOSER_CLASS_NAME = "task.chooser.class"
   val DROP_DESERIALIZATION_ERROR = "task.drop.deserialization.errors" // define whether drop the messages or not when deserialization fails
   val DROP_SERIALIZATION_ERROR = "task.drop.serialization.errors" // define whether drop the messages or not when serialization fails
+  val DROP_PRODUCER_ERROR = "task.drop.producer.errors" // whether to ignore producer errors and drop the messages that failed to send
   val IGNORED_EXCEPTIONS = "task.ignored.exceptions" // exceptions to ignore in process and window
   val GROUPER_FACTORY = "task.name.grouper.factory" // class name for task grouper
   val MAX_CONCURRENCY = "task.max.concurrency" // max number of concurrent process for a AsyncStreamTask
   val CALLBACK_TIMEOUT_MS = "task.callback.timeout.ms"  // timeout period for triggering a callback
+  val ASYNC_COMMIT = "task.async.commit" // to enable async commit in a AsyncStreamTask
 
   /**
    * Samza's container polls for more messages under two conditions. The first
@@ -106,6 +108,8 @@ class TaskConfig(config: Config) extends ScalaMapConfig(config) with Logging {
 
   def getDropSerialization = getOption(TaskConfig.DROP_SERIALIZATION_ERROR)
 
+  def getDropProducerError = getBoolean(TaskConfig.DROP_PRODUCER_ERROR, false)
+
   def getPollIntervalMs = getOption(TaskConfig.POLL_INTERVAL_MS)
 
   def getIgnoredExceptions = getOption(TaskConfig.IGNORED_EXCEPTIONS)
@@ -127,5 +131,15 @@ class TaskConfig(config: Config) extends ScalaMapConfig(config) with Logging {
   def getCallbackTimeoutMs: Option[Long] = getOption(TaskConfig.CALLBACK_TIMEOUT_MS) match {
     case Some(ms) => Some(ms.toLong)
     case _ => None
+  }
+
+  def getAsyncCommit: Option[Boolean] = getOption(TaskConfig.ASYNC_COMMIT) match {
+    case Some(asyncCommit) => Some(asyncCommit.toBoolean)
+    case _ => None
+  }
+
+  def isAutoCommitEnabled() = getOption(TaskConfig.COMMIT_MS) match {
+    case Some(commitMs) => commitMs.toInt > 0
+    case _ => true
   }
 }

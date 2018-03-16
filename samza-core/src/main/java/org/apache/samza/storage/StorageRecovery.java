@@ -30,6 +30,7 @@ import org.apache.samza.SamzaException;
 import org.apache.samza.config.Config;
 import org.apache.samza.config.JavaStorageConfig;
 import org.apache.samza.config.JavaSystemConfig;
+import org.apache.samza.config.StorageConfig;
 import org.apache.samza.container.SamzaContainerContext;
 import org.apache.samza.coordinator.JobModelManager;
 import org.apache.samza.job.model.ContainerModel;
@@ -64,7 +65,7 @@ public class StorageRecovery extends CommandLine {
   private HashMap<String, StorageEngineFactory<?, ?>> storageEngineFactories = new HashMap<String, StorageEngineFactory<?, ?>>();
   private HashMap<String, SystemFactory> systemFactories = new HashMap<String, SystemFactory>();
   private HashMap<String, SystemAdmin> systemAdmins = new HashMap<String, SystemAdmin>();
-  private Map<Integer, ContainerModel> containers = new HashMap<Integer, ContainerModel>();
+  private Map<String, ContainerModel> containers = new HashMap<String, ContainerModel>();
   private List<TaskStorageManager> taskStorageManagers = new ArrayList<TaskStorageManager>();
   private Logger log = LoggerFactory.getLogger(StorageRecovery.class);
 
@@ -210,8 +211,8 @@ public class StorageRecovery extends CommandLine {
 
     for (ContainerModel containerModel : containers.values()) {
       HashMap<String, StorageEngine> taskStores = new HashMap<String, StorageEngine>();
-      SamzaContainerContext containerContext = new SamzaContainerContext(containerModel.getContainerId(), jobConfig, containerModel.getTasks()
-          .keySet());
+      SamzaContainerContext containerContext = new SamzaContainerContext(containerModel.getProcessorId(), jobConfig, containerModel.getTasks()
+          .keySet(), new MetricsRegistryMap());
 
       for (TaskModel taskModel : containerModel.getTasks().values()) {
         HashMap<String, SystemConsumer> storeConsumers = getStoreConsumers();
@@ -238,7 +239,6 @@ public class StorageRecovery extends CommandLine {
             taskStores.put(storeName, storageEngine);
           }
         }
-
         TaskStorageManager taskStorageManager = new TaskStorageManager(
             taskModel.getTaskName(),
             Util.javaMapAsScalaMap(taskStores),
@@ -247,8 +247,11 @@ public class StorageRecovery extends CommandLine {
             maxPartitionNumber,
             streamMetadataCache,
             storeBaseDir,
-            storeBaseDir, taskModel.getChangelogPartition(),
-            Util.javaMapAsScalaMap(systemAdmins));
+            storeBaseDir,
+            taskModel.getChangelogPartition(),
+            Util.javaMapAsScalaMap(systemAdmins),
+            new StorageConfig(jobConfig).getChangeLogDeleteRetentionsInMs(),
+            new SystemClock());
 
         taskStorageManagers.add(taskStorageManager);
       }

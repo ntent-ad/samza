@@ -54,4 +54,20 @@ public interface TaskContext {
    *
    */
   void setStartingOffset(SystemStreamPartition ssp, String offset);
+
+  /**
+   * Sets the user-defined context.
+   *
+   * @param context the user-defined context to set
+   */
+  default void setUserContext(Object context) { }
+
+  /**
+   * Gets the user-defined context.
+   *
+   * @return the user-defined context if set, else null
+   */
+  default Object getUserContext() {
+    return null;
+  }
 }

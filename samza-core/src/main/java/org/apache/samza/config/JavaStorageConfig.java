@@ -21,7 +21,9 @@ package org.apache.samza.config;
 
 import java.util.ArrayList;
 import java.util.List;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.samza.SamzaException;
+import org.apache.samza.execution.StreamManager;
 
 
 /**
@@ -57,11 +59,11 @@ public class JavaStorageConfig extends MapConfig {
     // If the config specifies 'stores.<storename>.changelog' as '<system>.<stream>' combination - it will take precedence.
     // If this config only specifies <astream> and there is a value in job.changelog.system=<asystem> -
     // these values will be combined into <asystem>.<astream>
-    String systemStream = get(String.format(CHANGELOG_STREAM, storeName), null);
-    String changelogSystem = get(CHANGELOG_SYSTEM, null);
+    String systemStream = StringUtils.trimToNull(get(String.format(CHANGELOG_STREAM, storeName), null));
 
     String systemStreamRes;
     if (systemStream != null  && !systemStream.contains(".")) {
+      String changelogSystem = getChangelogSystem();
       // contains only stream name
       if (changelogSystem != null) {
         systemStreamRes = changelogSystem + "." + systemStream;
@@ -70,6 +72,10 @@ public class JavaStorageConfig extends MapConfig {
       }
     } else {
       systemStreamRes = systemStream;
+    }
+
+    if (systemStreamRes != null) {
+      systemStreamRes = StreamManager.createUniqueNameForBatch(systemStreamRes, this);
     }
     return systemStreamRes;
   }
@@ -84,5 +90,24 @@ public class JavaStorageConfig extends MapConfig {
 
   public String getStorageMsgSerde(String storeName) {
     return get(String.format(MSG_SERDE, storeName), null);
+  }
+
+  /**
+   * Gets the System to use for reading/writing checkpoints. Uses the following precedence.
+   *
+   * 1. If job.changelog.system is defined, that value is used.
+   * 2. If job.default.system is defined, that value is used.
+   * 3. null
+   *
+   * Note: Changelogs can be defined using
+   * stores.storeName.changelog=systemName.streamName  or
+   * stores.storeName.changelog=streamName
+   *
+   * If the former syntax is used, that system name will still be honored. For the latter syntax, this method is used.
+   *
+   * @return the name of the system to use by default for all changelogs, if defined. 
+   */
+  public String getChangelogSystem() {
+    return get(CHANGELOG_SYSTEM,  get(JobConfig.JOB_DEFAULT_SYSTEM(), null));
   }
 }

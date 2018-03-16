@@ -19,13 +19,9 @@
 
 package org.apache.samza.job.local
 
+import org.apache.samza.job.ApplicationStatus.{New, Running, SuccessfulFinish, UnsuccessfulFinish}
+import org.apache.samza.job.{ApplicationStatus, StreamJob}
 import org.apache.samza.util.Logging
-import org.apache.samza.job.StreamJob
-import org.apache.samza.job.ApplicationStatus
-import org.apache.samza.job.ApplicationStatus.New
-import org.apache.samza.job.ApplicationStatus.Running
-import org.apache.samza.job.ApplicationStatus.SuccessfulFinish
-import org.apache.samza.job.ApplicationStatus.UnsuccessfulFinish
 
 class ThreadJob(runnable: Runnable) extends StreamJob with Logging {
   @volatile var jobStatus: Option[ApplicationStatus] = None
@@ -42,7 +38,7 @@ class ThreadJob(runnable: Runnable) extends StreamJob with Logging {
           runnable.run
           jobStatus = Some(SuccessfulFinish)
         } catch {
-          case e: Exception => {
+          case e: Throwable => {
             error("Failing job with exception.", e)
             jobStatus = Some(UnsuccessfulFinish)
             throw e

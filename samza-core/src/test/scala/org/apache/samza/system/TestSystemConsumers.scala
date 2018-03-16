@@ -19,6 +19,9 @@
 
 package org.apache.samza.system
 
+import java.util
+import java.util.Collections
+
 import org.junit.Assert._
 import org.junit.Test
 import org.apache.samza.Partition
@@ -28,7 +31,7 @@ import org.apache.samza.system.chooser.DefaultChooser
 import org.apache.samza.system.chooser.MockMessageChooser
 import org.apache.samza.util.BlockingEnvelopeMap
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 
 class TestSystemConsumers {
   def testPollIntervalMs {
@@ -159,7 +162,7 @@ class TestSystemConsumers {
       def start = consumerStarted += 1
       def stop = consumerStopped += 1
       def register(systemStreamPartition: SystemStreamPartition, offset: String) = consumerRegistered += systemStreamPartition -> offset
-      def poll(systemStreamPartitions: java.util.Set[SystemStreamPartition], timeout: Long) = Map[SystemStreamPartition, java.util.List[IncomingMessageEnvelope]]()
+      def poll(systemStreamPartitions: java.util.Set[SystemStreamPartition], timeout: Long) = Map[SystemStreamPartition, java.util.List[IncomingMessageEnvelope]]().asJava
     })
 
     val consumers = new SystemConsumers(new MessageChooser {
@@ -199,7 +202,7 @@ class TestSystemConsumers {
       def start {}
       def stop {}
       def register(systemStreamPartition: SystemStreamPartition, offset: String) {}
-      def poll(systemStreamPartitions: java.util.Set[SystemStreamPartition], timeout: Long) = Map[SystemStreamPartition, java.util.List[IncomingMessageEnvelope]]()
+      def poll(systemStreamPartitions: java.util.Set[SystemStreamPartition], timeout: Long) = Map[SystemStreamPartition, java.util.List[IncomingMessageEnvelope]]().asJava
     })
     val consumers = new SystemConsumers(new MessageChooser {
       def update(envelope: IncomingMessageEnvelope) = Unit
@@ -285,10 +288,62 @@ class TestSystemConsumers {
 
   }
 
+  @Test
+  def testSystemConsumersShouldNotPollEndOfStreamSSPs {
+    val system = "test-system"
+    val stream = "some-stream"
+    val systemStreamPartition1 = new SystemStreamPartition(system, stream, new Partition(1))
+    val systemStreamPartition2 = new SystemStreamPartition(system, stream, new Partition(2))
+    val normalEnvelope = new IncomingMessageEnvelope(systemStreamPartition1, "1", "k", "v")
+    val endOfStreamEnvelope = IncomingMessageEnvelope.buildEndOfStreamEnvelope(systemStreamPartition2)
+    val consumer = new CustomPollResponseSystemConsumer(normalEnvelope)
+    val consumers = new SystemConsumers(new MockMessageChooser, Map(system -> consumer),
+      new SerdeManager, new SystemConsumersMetrics,
+      SystemConsumers.DEFAULT_NO_NEW_MESSAGES_TIMEOUT,
+      SystemConsumers.DEFAULT_DROP_SERIALIZATION_ERROR,
+      SystemConsumers.DEFAULT_POLL_INTERVAL_MS, clock = () => 0)
+
+    consumers.register(systemStreamPartition1, "0")
+    consumers.register(systemStreamPartition2, "0")
+    consumers.start
+
+    // Start should trigger a poll to the consumer.
+    assertEquals(1, consumer.polls)
+    assertEquals(2, consumer.lastPoll.size())
+
+    // Tell the consumer to start returning messages when polled.
+    val nextResponse = Map[SystemStreamPartition, java.util.List[IncomingMessageEnvelope]](
+      systemStreamPartition1 -> Collections.singletonList(normalEnvelope),
+      systemStreamPartition2 -> Collections.singletonList(endOfStreamEnvelope)
+    )
+    consumer.setNextResponse(nextResponse)
+
+    // Choose to trigger a refresh with data.
+    assertNull(consumers.choose())
+
+    // Choose should have triggered a second poll, since no messages are available.
+    assertEquals(2, consumer.polls)
+    assertEquals(2, consumer.lastPoll.size())
+
+    // Choose a few times and let chooser handle the end of stream message
+    assertNotNull(consumers.choose())
+    assertNotNull(consumers.choose())
+    consumers.tryUpdate(systemStreamPartition1)
+    // Now assuming that chooser has processed end of stream message,
+    // tryUpdate shouldn't add ssp back to emptySystemStreamPartitionsBySystem
+    consumers.tryUpdate(systemStreamPartition2)
+    assertNull(consumers.choose())
+    assertEquals(3, consumer.polls)
+    // SystemConsumers should poll only one partition: ssp1
+    assertEquals(1, consumer.lastPoll.size())
+    assertTrue(consumer.lastPoll.contains(systemStreamPartition1))
+  }
+
   /**
    * A simple MockSystemConsumer that keeps track of what was polled, and lets
    * you define how many envelopes to return in the poll response. You can
    * supply the envelope to use for poll responses through the constructor.
+   * You can also directly set the next response by calling setNextResponse
    */
   private class CustomPollResponseSystemConsumer(envelope: IncomingMessageEnvelope) extends SystemConsumer {
     var polls = 0
@@ -299,14 +354,17 @@ class TestSystemConsumers {
     def register(systemStreamPartition: SystemStreamPartition, offset: String) {}
     def poll(systemStreamPartitions: java.util.Set[SystemStreamPartition], timeout: Long) = {
       polls += 1
-      lastPoll = systemStreamPartitions
-      pollResponse
+      lastPoll = new util.HashSet[SystemStreamPartition](systemStreamPartitions)
+      pollResponse.asJava
     }
     def setResponseSizes(numEnvelopes: Int) {
       val q = new java.util.ArrayList[IncomingMessageEnvelope]()
       (0 until numEnvelopes).foreach { i => q.add(envelope) }
       pollResponse = Map(envelope.getSystemStreamPartition -> q)
       pollResponse = Map[SystemStreamPartition, java.util.List[IncomingMessageEnvelope]]()
+    }
+    def setNextResponse(nextResponse: Map[SystemStreamPartition, java.util.List[IncomingMessageEnvelope]]) {
+      pollResponse = nextResponse
     }
   }
 
@@ -330,6 +388,6 @@ class TestSystemConsumers {
 
 object TestSystemConsumers {
   def getSystemConsumers(consumers: java.util.Map[String, SystemConsumer]) : SystemConsumers = {
-    new SystemConsumers(new DefaultChooser, consumers.toMap)
+    new SystemConsumers(new DefaultChooser, consumers.asScala.toMap)
   }
 }

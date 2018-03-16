@@ -23,9 +23,12 @@ import org.apache.samza.config.Config;
 import java.lang.reflect.Field;
 
 import java.util.Map;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 public class MockContainerAllocator extends ContainerAllocator {
   public int requestedContainers = 0;
+  private Semaphore semaphore = new Semaphore(0);
 
   public MockContainerAllocator(ClusterResourceManager manager,
                                 Config config,
@@ -33,8 +36,22 @@ public class MockContainerAllocator extends ContainerAllocator {
     super(manager, config, state);
   }
 
+  /**
+   * Causes the current thread to block until the expected number of containers have started.
+   *
+   * @param numExpectedContainers the number of containers expected to start
+   * @param timeout the maximum time to wait
+   * @param unit the time unit of the {@code timeout} argument
+   *
+   * @return a boolean that specifies whether containers started within the timeout.
+   * @throws InterruptedException  if the current thread is interrupted while waiting
+   */
+  boolean awaitContainersStart(int numExpectedContainers, long timeout, TimeUnit unit) throws InterruptedException {
+    return semaphore.tryAcquire(numExpectedContainers, timeout, unit);
+  }
+
   @Override
-  public void requestResources(Map<Integer, String> containerToHostMappings) {
+  public void requestResources(Map<String, String> containerToHostMappings) {
     requestedContainers += containerToHostMappings.size();
     super.requestResources(containerToHostMappings);
   }
@@ -44,5 +61,11 @@ public class MockContainerAllocator extends ContainerAllocator {
     field.setAccessible(true);
 
     return (ResourceRequestState) field.get(this);
+  }
+
+  @Override
+  protected void runStreamProcessor(SamzaResourceRequest request, String preferredHost) {
+    super.runStreamProcessor(request, preferredHost);
+    semaphore.release();
   }
 }

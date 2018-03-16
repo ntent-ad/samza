@@ -19,51 +19,43 @@
 
 package org.apache.samza.job
 
+
 import org.apache.samza.SamzaException
-import org.apache.samza.config.{ConfigRewriter, Config}
+import org.apache.samza.config.Config
 import org.apache.samza.config.JobConfig.Config2Job
-import org.apache.samza.coordinator.stream.messages.{Delete, SetConfig}
-import org.apache.samza.job.ApplicationStatus.Running
-import org.apache.samza.util.ClassLoaderHelper
-import org.apache.samza.util.CommandLine
-import org.apache.samza.util.Logging
-import org.apache.samza.util.Util
-import scala.collection.JavaConversions._
-import org.apache.samza.metrics.MetricsRegistryMap
 import org.apache.samza.coordinator.stream.CoordinatorStreamSystemFactory
+import org.apache.samza.coordinator.stream.messages.{Delete, SetConfig}
+import org.apache.samza.job.ApplicationStatus.{Running, SuccessfulFinish}
+import org.apache.samza.metrics.MetricsRegistryMap
+import org.apache.samza.runtime.ApplicationRunnerMain.ApplicationRunnerCommandLine
+import org.apache.samza.runtime.ApplicationRunnerOperation
+import org.apache.samza.system.StreamSpec
+import org.apache.samza.util.{Logging, Util}
+
+import scala.collection.JavaConverters._
 
 
 object JobRunner extends Logging {
   val SOURCE = "job-runner"
 
-  /**
-   * Re-writes configuration using a ConfigRewriter, if one is defined. If
-   * there is no ConfigRewriter defined for the job, then this method is a
-   * no-op.
-   *
-   * @param config The config to re-write.
-   */
-  def rewriteConfig(config: Config): Config = {
-    def rewrite(c: Config, rewriterName: String): Config = {
-      val klass = config
-        .getConfigRewriterClass(rewriterName)
-        .getOrElse(throw new SamzaException("Unable to find class config for config rewriter %s." format rewriterName))
-      val rewriter = Util.getObj[ConfigRewriter](klass)
-      info("Re-writing config with " + rewriter)
-      rewriter.rewrite(rewriterName, c)
-    }
-
-    config.getConfigRewriters match {
-      case Some(rewriters) => rewriters.split(",").foldLeft(config)(rewrite(_, _))
-      case _ => config
-    }
-  }
-
   def main(args: Array[String]) {
-    val cmdline = new CommandLine
+    val cmdline = new ApplicationRunnerCommandLine
     val options = cmdline.parser.parse(args: _*)
     val config = cmdline.loadConfig(options)
-    new JobRunner(rewriteConfig(config)).run()
+    val operation = cmdline.getOperation(options)
+
+    val runner = new JobRunner(Util.rewriteConfig(config))
+    doOperation(runner, operation)
+  }
+
+  def doOperation(runner: JobRunner, operation: ApplicationRunnerOperation): Unit = {
+    operation match {
+      case ApplicationRunnerOperation.RUN => runner.run()
+      case ApplicationRunnerOperation.KILL => runner.kill()
+      case ApplicationRunnerOperation.STATUS => println(runner.status())
+      case _ =>
+        throw new SamzaException("Invalid job runner operation: %s" format operation)
+    }
   }
 }
 
@@ -85,12 +77,7 @@ class JobRunner(config: Config) extends Logging {
    */
   def run(resetJobConfig: Boolean = true) = {
     debug("config: %s" format (config))
-    val jobFactoryClass = config.getStreamJobFactoryClass match {
-      case Some(factoryClass) => factoryClass
-      case _ => throw new SamzaException("no job factory class defined")
-    }
-    val jobFactory = ClassLoaderHelper.fromClassName[StreamJobFactory](jobFactoryClass)
-    info("job factory: %s" format (jobFactoryClass))
+    val jobFactory: StreamJobFactory = getJobFactory
     val factory = new CoordinatorStreamSystemFactory
     val coordinatorSystemConsumer = factory.getCoordinatorStreamSystemConsumer(config, new MetricsRegistryMap)
     val coordinatorSystemProducer = factory.getCoordinatorStreamSystemProducer(config, new MetricsRegistryMap)
@@ -99,28 +86,33 @@ class JobRunner(config: Config) extends Logging {
     info("Creating coordinator stream")
     val (coordinatorSystemStream, systemFactory) = Util.getCoordinatorSystemStreamAndFactory(config)
     val systemAdmin = systemFactory.getAdmin(coordinatorSystemStream.getSystem, config)
-    systemAdmin.createCoordinatorStream(coordinatorSystemStream.getStream)
+    val streamName = coordinatorSystemStream.getStream
+    val coordinatorSpec = StreamSpec.createCoordinatorStreamSpec(streamName, coordinatorSystemStream.getSystem)
+    if (systemAdmin.createStream(coordinatorSpec)) {
+      info("Created coordinator stream %s." format streamName)
+    } else {
+      info("Coordinator stream %s already exists." format streamName)
+    }
 
     if (resetJobConfig) {
       info("Storing config in coordinator stream.")
       coordinatorSystemProducer.register(JobRunner.SOURCE)
-      coordinatorSystemProducer.start
+      coordinatorSystemProducer.start()
       coordinatorSystemProducer.writeConfig(JobRunner.SOURCE, config)
     }
     info("Loading old config from coordinator stream.")
-    coordinatorSystemConsumer.register
-    coordinatorSystemConsumer.start
-    coordinatorSystemConsumer.bootstrap
-    coordinatorSystemConsumer.stop
+    coordinatorSystemConsumer.register()
+    coordinatorSystemConsumer.start()
+    coordinatorSystemConsumer.bootstrap()
+    coordinatorSystemConsumer.stop()
 
-    val oldConfig = coordinatorSystemConsumer.getConfig()
+    val oldConfig = coordinatorSystemConsumer.getConfig
     if (resetJobConfig) {
-      info("Deleting old configs that are no longer defined: %s".format(oldConfig.keySet -- config.keySet))
-      (oldConfig.keySet -- config.keySet).foreach(key => {
-        coordinatorSystemProducer.send(new Delete(JobRunner.SOURCE, key, SetConfig.TYPE))
-      })
+      val keysToRemove = oldConfig.keySet.asScala.toSet.diff(config.keySet.asScala)
+      info("Deleting old configs that are no longer defined: %s".format(keysToRemove))
+      keysToRemove.foreach(key => { coordinatorSystemProducer.send(new Delete(JobRunner.SOURCE, key, SetConfig.TYPE)) })
     }
-    coordinatorSystemProducer.stop
+    coordinatorSystemProducer.stop()
 
     // Create the actual job, and submit it.
     val job = jobFactory.getJob(config).submit
@@ -141,5 +133,45 @@ class JobRunner(config: Config) extends Logging {
 
     info("exiting")
     job
+  }
+
+  def kill(): Unit = {
+    val jobFactory: StreamJobFactory = getJobFactory
+
+    // Create the actual job, and kill it.
+    val job = jobFactory.getJob(config).kill()
+
+    info("waiting for job to terminate")
+
+    // Wait until the job has terminated, then exit.
+    Option(job.waitForFinish(5000)) match {
+      case Some(appStatus) => {
+        if (SuccessfulFinish.equals(appStatus)) {
+          info("job terminated successfully - " + appStatus)
+        } else {
+          warn("unable to terminate job successfully. job has status %s" format (appStatus))
+        }
+      }
+      case _ => warn("unable to terminate job successfully.")
+    }
+
+    info("exiting")
+  }
+
+  def status(): ApplicationStatus = {
+    val jobFactory: StreamJobFactory = getJobFactory
+
+    // Create the actual job, and get its status.
+    jobFactory.getJob(config).getStatus
+  }
+
+  private def getJobFactory: StreamJobFactory = {
+    val jobFactoryClass = config.getStreamJobFactoryClass match {
+      case Some(factoryClass) => factoryClass
+      case _ => throw new SamzaException("no job factory class defined")
+    }
+    val jobFactory = Class.forName(jobFactoryClass).newInstance.asInstanceOf[StreamJobFactory]
+    info("job factory: %s" format (jobFactoryClass))
+    jobFactory
   }
 }

@@ -31,13 +31,13 @@ import org.apache.samza.system.SystemStreamPartition;
 import org.apache.samza.util.Util;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import scala.collection.JavaConversions;
+import scala.collection.JavaConverters;
 
 
 public class TaskConfigJava extends MapConfig {
   // Task Configs
-  private static final String TASK_SHUTDOWN_MS = "task.shutdown.ms";
-  public static final long DEFAULT_TASK_SHUTDOWN_MS = 5000L;
+  public static final String TASK_SHUTDOWN_MS = "task.shutdown.ms";
+  public static final long DEFAULT_TASK_SHUTDOWN_MS = 30000L;
 
   // broadcast streams consumed by all tasks. e.g. kafka.foo#1
   public static final String BROADCAST_INPUT_STREAMS = "task.broadcast.inputs";
@@ -116,7 +116,7 @@ public class TaskConfigJava extends MapConfig {
     Set<SystemStream> allInputSS = new HashSet<>();
 
     TaskConfig taskConfig = TaskConfig.Config2Task(this);
-    allInputSS.addAll(JavaConversions.setAsJavaSet(taskConfig.getInputStreams()));
+    allInputSS.addAll((Set<? extends SystemStream>) JavaConverters.setAsJavaSetConverter(taskConfig.getInputStreams()).asJava());
     allInputSS.addAll(getBroadcastSystemStreams());
 
     return Collections.unmodifiableSet(allInputSS);

@@ -22,14 +22,22 @@ package org.apache.samza.config;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.samza.SamzaException;
+import org.apache.samza.system.SystemAdmin;
+import org.apache.samza.system.SystemFactory;
+import org.apache.samza.util.Util;
+
 
 /**
  * a java version of the system config
  */
 public class JavaSystemConfig extends MapConfig {
-  private static final String SYSTEM_PREFIX = "systems.";
-  private static final String SYSTEM_FACTORY_SUFFIX = ".samza.factory";
-  private static final String SYSTEM_FACTORY = "systems.%s.samza.factory";
+  public static final String SYSTEM_PREFIX = "systems.";
+  public static final String SYSTEM_FACTORY_SUFFIX = ".samza.factory";
+  public static final String SYSTEM_FACTORY_FORMAT = SYSTEM_PREFIX + "%s" + SYSTEM_FACTORY_SUFFIX;
+  private static final String SYSTEM_DEFAULT_STREAMS_PREFIX_FORMAT = SYSTEM_PREFIX + "%s" + ".default.stream.";
   private static final String EMPTY = "";
 
   public JavaSystemConfig(Config config) {
@@ -40,8 +48,9 @@ public class JavaSystemConfig extends MapConfig {
     if (name == null) {
       return null;
     }
-    String systemFactory = String.format(SYSTEM_FACTORY, name);
-    return get(systemFactory, null);
+    String systemFactory = String.format(SYSTEM_FACTORY_FORMAT, name);
+    String value = get(systemFactory, null);
+    return (StringUtils.isBlank(value)) ? null : value;
   }
 
   /**
@@ -59,5 +68,48 @@ public class JavaSystemConfig extends MapConfig {
       }
     }
     return systemNames;
+  }
+
+  /**
+   * Get {@link SystemAdmin} instances for all the systems defined in this config.
+   *
+   * @return map of system name to {@link SystemAdmin}
+   */
+  public Map<String, SystemAdmin> getSystemAdmins() {
+    return getSystemFactories().entrySet()
+        .stream()
+        .collect(Collectors.toMap(systemNameToFactoryEntry -> systemNameToFactoryEntry.getKey(),
+            systemNameToFactoryEntry -> systemNameToFactoryEntry.getValue()
+                .getAdmin(systemNameToFactoryEntry.getKey(), this)));
+  }
+
+  /**
+   * Get {@link SystemFactory} instances for all the systems defined in this config.
+   *
+   * @return a map from system name to {@link SystemFactory}
+   */
+  public Map<String, SystemFactory> getSystemFactories() {
+    Map<String, SystemFactory> systemFactories = getSystemNames().stream().collect(Collectors.toMap(
+      systemName -> systemName,
+      systemName -> {
+        String systemFactoryClassName = getSystemFactory(systemName);
+        if (systemFactoryClassName == null) {
+          throw new SamzaException(
+              String.format("A stream uses system %s, which is missing from the configuration.", systemName));
+        }
+        return Util.getObj(systemFactoryClassName);
+      }));
+
+    return systemFactories;
+  }
+
+  /**
+   * Gets the system-wide defaults for streams.
+   *
+   * @param systemName the name of the system for which the defaults will be returned.
+   * @return a subset of the config with the system prefix removed.
+   */
+  public Config getDefaultStreamProperties(String systemName) {
+    return subset(String.format(SYSTEM_DEFAULT_STREAMS_PREFIX_FORMAT, systemName), true);
   }
 }

@@ -47,7 +47,7 @@ import org.apache.samza.util.Throttleable;
 import org.apache.samza.util.ThrottlingScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import scala.collection.JavaConversions;
+import scala.collection.JavaConverters;
 
 
 /**
@@ -74,6 +74,7 @@ public class AsyncRunLoop implements Runnable, Throttleable {
   private volatile boolean shutdownNow = false;
   private volatile Throwable throwable = null;
   private final HighResolutionClock clock;
+  private final boolean isAsyncCommitEnabled;
 
   public AsyncRunLoop(Map<TaskName, TaskInstance> taskInstances,
       ExecutorService threadPool,
@@ -84,7 +85,8 @@ public class AsyncRunLoop implements Runnable, Throttleable {
       long callbackTimeoutMs,
       long maxThrottlingDelayMs,
       SamzaContainerMetrics containerMetrics,
-      HighResolutionClock clock) {
+      HighResolutionClock clock,
+      boolean isAsyncCommitEnabled) {
 
     this.threadPool = threadPool;
     this.consumerMultiplexer = consumerMultiplexer;
@@ -106,6 +108,7 @@ public class AsyncRunLoop implements Runnable, Throttleable {
     // Partions and tasks assigned to the container will not change during the run loop life time
     this.sspToTaskWorkerMapping = Collections.unmodifiableMap(getSspToAsyncTaskWorkerMap(taskInstances, workers));
     this.taskWorkers = Collections.unmodifiableList(new ArrayList<>(workers.values()));
+    this.isAsyncCommitEnabled = isAsyncCommitEnabled;
   }
 
   /**
@@ -115,7 +118,7 @@ public class AsyncRunLoop implements Runnable, Throttleable {
       Map<TaskName, TaskInstance> taskInstances, Map<TaskName, AsyncTaskWorker> taskWorkers) {
     Map<SystemStreamPartition, List<AsyncTaskWorker>> sspToWorkerMap = new HashMap<>();
     for (TaskInstance task : taskInstances.values()) {
-      Set<SystemStreamPartition> ssps = JavaConversions.setAsJavaSet(task.systemStreamPartitions());
+      Set<SystemStreamPartition> ssps = JavaConverters.setAsJavaSetConverter(task.systemStreamPartitions()).asJava();
       for (SystemStreamPartition ssp : ssps) {
         sspToWorkerMap.putIfAbsent(ssp, new ArrayList<>());
         sspToWorkerMap.get(ssp).add(taskWorkers.get(task.taskName()));
@@ -317,7 +320,7 @@ public class AsyncRunLoop implements Runnable, Throttleable {
       this.task = task;
       this.callbackManager = new TaskCallbackManager(this, callbackTimer, callbackTimeoutMs, maxConcurrency, clock);
       Set<SystemStreamPartition> sspSet = getWorkingSSPSet(task);
-      this.state = new AsyncTaskState(task.taskName(), task.metrics(), sspSet);
+      this.state = new AsyncTaskState(task.taskName(), task.metrics(), sspSet, task.hasIntermediateStreams());
     }
 
     private void init() {
@@ -352,7 +355,7 @@ public class AsyncRunLoop implements Runnable, Throttleable {
      */
     private Set<SystemStreamPartition> getWorkingSSPSet(TaskInstance task) {
 
-      Set<SystemStreamPartition> allPartitions = new HashSet<>(JavaConversions.setAsJavaSet(task.systemStreamPartitions()));
+      Set<SystemStreamPartition> allPartitions = new HashSet<>(JavaConverters.setAsJavaSetConverter(task.systemStreamPartitions()).asJava());
 
       // filter only those SSPs that are not at end of stream.
       Set<SystemStreamPartition> workingSSPSet = allPartitions.stream()
@@ -440,9 +443,23 @@ public class AsyncRunLoop implements Runnable, Throttleable {
             long startTime = clock.nanoTime();
             task.window(coordinator);
             containerMetrics.windowNs().update(clock.nanoTime() - startTime);
+
+            // A window() that executes for more than task.window.ms, will starve the next process() call
+            // when the application has job.thread.pool.size > 1. This is due to prioritizing window() ahead of process()
+            // to guarantee window() will fire close to its trigger interval time.
+            // We warn the users if the average window execution time is greater than equals to window trigger interval.
+            long lowerBoundForWindowTriggerTimeInMs = TimeUnit.NANOSECONDS
+                .toMillis((long) containerMetrics.windowNs().getSnapshot().getAverage());
+            if (windowMs <= lowerBoundForWindowTriggerTimeInMs) {
+              log.warn(
+                  "window() call might potentially starve process calls."
+                      + " Consider setting task.window.ms > {} ms",
+                  lowerBoundForWindowTriggerTimeInMs);
+            }
+
             coordinatorRequests.update(coordinator);
 
-            state.doneWindowOrCommit();
+            state.doneWindow();
           } catch (Throwable t) {
             log.error("Task {} window failed", task.taskName(), t);
             abort(t);
@@ -477,7 +494,7 @@ public class AsyncRunLoop implements Runnable, Throttleable {
             task.commit();
             containerMetrics.commitNs().update(clock.nanoTime() - startTime);
 
-            state.doneWindowOrCommit();
+            state.doneCommit();
           } catch (Throwable t) {
             log.error("Task {} commit failed", task.taskName(), t);
             abort(t);
@@ -510,20 +527,19 @@ public class AsyncRunLoop implements Runnable, Throttleable {
         public void run() {
           try {
             state.doneProcess();
+            state.taskMetrics.asyncCallbackCompleted().inc();
             TaskCallbackImpl callbackImpl = (TaskCallbackImpl) callback;
             containerMetrics.processNs().update(clock.nanoTime() - callbackImpl.timeCreatedNs);
             log.trace("Got callback complete for task {}, ssp {}",
                 callbackImpl.taskName, callbackImpl.envelope.getSystemStreamPartition());
 
-            TaskCallbackImpl callbackToUpdate = callbackManager.updateCallback(callbackImpl);
-            if (callbackToUpdate != null) {
+            List<TaskCallbackImpl> callbacksToUpdate = callbackManager.updateCallback(callbackImpl);
+            for (TaskCallbackImpl callbackToUpdate : callbacksToUpdate) {
               IncomingMessageEnvelope envelope = callbackToUpdate.envelope;
-              log.trace("Update offset for ssp {}, offset {}",
-                  envelope.getSystemStreamPartition(), envelope.getOffset());
+              log.trace("Update offset for ssp {}, offset {}", envelope.getSystemStreamPartition(), envelope.getOffset());
 
               // update offset
-              task.offsetManager().update(task.taskName(),
-                  envelope.getSystemStreamPartition(), envelope.getOffset());
+              task.offsetManager().update(task.taskName(), envelope.getSystemStreamPartition(), envelope.getOffset());
 
               // update coordinator
               coordinatorRequests.update(callbackToUpdate.coordinator);
@@ -571,7 +587,8 @@ public class AsyncRunLoop implements Runnable, Throttleable {
     private volatile boolean needCommit = false;
     private volatile boolean complete = false;
     private volatile boolean endOfStream = false;
-    private volatile boolean windowOrCommitInFlight = false;
+    private volatile boolean windowInFlight = false;
+    private volatile boolean commitInFlight = false;
     private final AtomicInteger messagesInFlight = new AtomicInteger(0);
     private final ArrayDeque<PendingEnvelope> pendingEnvelopeQueue;
 
@@ -579,12 +596,14 @@ public class AsyncRunLoop implements Runnable, Throttleable {
     private final Set<SystemStreamPartition> processingSspSet;
     private final TaskName taskName;
     private final TaskInstanceMetrics taskMetrics;
+    private final boolean hasIntermediateStreams;
 
-    AsyncTaskState(TaskName taskName, TaskInstanceMetrics taskMetrics, Set<SystemStreamPartition> sspSet) {
+    AsyncTaskState(TaskName taskName, TaskInstanceMetrics taskMetrics, Set<SystemStreamPartition> sspSet, boolean hasIntermediateStreams) {
       this.taskName = taskName;
       this.taskMetrics = taskMetrics;
       this.pendingEnvelopeQueue = new ArrayDeque<>();
       this.processingSspSet = sspSet;
+      this.hasIntermediateStreams = hasIntermediateStreams;
     }
 
     private boolean checkEndOfStream() {
@@ -595,7 +614,9 @@ public class AsyncRunLoop implements Runnable, Throttleable {
         if (envelope.isEndOfStream()) {
           SystemStreamPartition ssp = envelope.getSystemStreamPartition();
           processingSspSet.remove(ssp);
-          pendingEnvelopeQueue.remove();
+          if (!hasIntermediateStreams) {
+            pendingEnvelopeQueue.remove();
+          }
         }
       }
       return processingSspSet.isEmpty();
@@ -603,6 +624,7 @@ public class AsyncRunLoop implements Runnable, Throttleable {
 
     /**
      * Returns whether the task is ready to do process/window/commit.
+     *
      */
     private boolean isReady() {
       if (checkEndOfStream()) {
@@ -611,14 +633,30 @@ public class AsyncRunLoop implements Runnable, Throttleable {
       if (coordinatorRequests.commitRequests().remove(taskName)) {
         needCommit = true;
       }
-      if (needWindow || needCommit || endOfStream) {
-        // ready for window or commit only when no messages are in progress and
-        // no window/commit in flight
+
+      boolean windowOrCommitInFlight = windowInFlight || commitInFlight;
+      /*
+       * A task is ready to commit, when task.commit(needCommit) is requested either by user or commit thread
+       * and either of the following conditions are true.
+       * a) When process, window, commit are not in progress.
+       * b) When task.async.commit is true and window, commit are not in progress.
+       */
+      if (needCommit) {
+        return (messagesInFlight.get() == 0 || isAsyncCommitEnabled) && !windowOrCommitInFlight;
+      } else if (needWindow || endOfStream) {
+        /*
+         * A task is ready for window operation, when task.window(needWindow) is requested by either user or window thread
+         * and window, commit are not in progress.
+         */
         return messagesInFlight.get() == 0 && !windowOrCommitInFlight;
       } else {
-        // ready for process only when the inflight message count does not exceed threshold
-        // and no window/commit in flight
-        return messagesInFlight.get() < maxConcurrency && !windowOrCommitInFlight;
+        /*
+         * A task is ready to process new message, when number of task.process calls in progress < task.max.concurrency
+         * and either of the following conditions are true.
+         * a) When window, commit are not in progress.
+         * b) When task.async.commit is true and window is not in progress.
+         */
+        return messagesInFlight.get() < maxConcurrency && !windowInFlight && (isAsyncCommitEnabled || !commitInFlight);
       }
     }
 
@@ -632,7 +670,7 @@ public class AsyncRunLoop implements Runnable, Throttleable {
       if (isReady()) {
         if (needCommit) return WorkerOp.COMMIT;
         else if (needWindow) return WorkerOp.WINDOW;
-        else if (endOfStream) return WorkerOp.END_OF_STREAM;
+        else if (endOfStream && pendingEnvelopeQueue.isEmpty()) return WorkerOp.END_OF_STREAM;
         else if (!pendingEnvelopeQueue.isEmpty()) return WorkerOp.PROCESS;
       }
       return WorkerOp.NO_OP;
@@ -648,12 +686,12 @@ public class AsyncRunLoop implements Runnable, Throttleable {
 
     private void startWindow() {
       needWindow = false;
-      windowOrCommitInFlight = true;
+      windowInFlight = true;
     }
 
     private void startCommit() {
       needCommit = false;
-      windowOrCommitInFlight = true;
+      commitInFlight = true;
     }
 
     private void startProcess() {
@@ -661,8 +699,12 @@ public class AsyncRunLoop implements Runnable, Throttleable {
       taskMetrics.messagesInFlight().set(count);
     }
 
-    private void doneWindowOrCommit() {
-      windowOrCommitInFlight = false;
+    private void doneCommit() {
+      commitInFlight = false;
+    }
+
+    private void doneWindow() {
+      windowInFlight = false;
     }
 
     private void doneProcess() {

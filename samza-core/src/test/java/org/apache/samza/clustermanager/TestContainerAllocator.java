@@ -21,12 +21,9 @@ package org.apache.samza.clustermanager;
 
 import org.apache.samza.config.Config;
 import org.apache.samza.config.MapConfig;
-import org.apache.samza.container.TaskName;
 import org.apache.samza.coordinator.JobModelManager;
-import org.apache.samza.coordinator.server.HttpServer;
-import org.apache.samza.job.model.ContainerModel;
-import org.apache.samza.job.model.JobModel;
-import org.apache.samza.job.model.TaskModel;
+import org.apache.samza.coordinator.JobModelManagerTestUtil;
+import org.apache.samza.testUtils.MockHttpServer;
 import org.eclipse.jetty.servlet.DefaultServlet;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.junit.After;
@@ -47,8 +44,9 @@ public class TestContainerAllocator {
   private final MockClusterResourceManagerCallback callback = new MockClusterResourceManagerCallback();
   private final MockClusterResourceManager manager = new MockClusterResourceManager(callback);
   private final Config config = getConfig();
-  private final JobModelManager reader = getJobModelReader(1);
-  private final SamzaApplicationState state = new SamzaApplicationState(reader);
+  private final JobModelManager jobModelManager = JobModelManagerTestUtil.getJobModelManager(config, 1,
+      new MockHttpServer("/", 7777, null, new ServletHolder(DefaultServlet.class)));
+  private final SamzaApplicationState state = new SamzaApplicationState(jobModelManager);
   private ContainerAllocator containerAllocator;
   private MockContainerRequestState requestState;
   private Thread allocatorThread;
@@ -67,7 +65,7 @@ public class TestContainerAllocator {
 
   @After
   public void teardown() throws Exception {
-    reader.stop();
+    jobModelManager.stop();
     containerAllocator.stop();
   }
 
@@ -75,16 +73,16 @@ public class TestContainerAllocator {
   private static Config getConfig() {
     Config config = new MapConfig(new HashMap<String, String>() {
       {
-        put("yarn.container.count", "1");
-        put("systems.test-system.samza.factory", "org.apache.samza.job.yarn.MockSystemFactory");
-        put("yarn.container.memory.mb", "512");
+        put("cluster-manager.container.count", "1");
+        put("cluster-manager.container.retry.count", "1");
+        put("cluster-manager.container.retry.window.ms", "1999999999");
+        put("cluster-manager.allocator.sleep.ms", "10");
+        put("cluster-manager.container.memory.mb", "512");
         put("yarn.package.path", "/foo");
         put("task.inputs", "test-system.test-stream");
+        put("systems.test-system.samza.factory", "org.apache.samza.system.MockSystemFactory");
         put("systems.test-system.samza.key.serde", "org.apache.samza.serializers.JsonSerde");
         put("systems.test-system.samza.msg.serde", "org.apache.samza.serializers.JsonSerde");
-        put("yarn.container.retry.count", "1");
-        put("yarn.container.retry.window.ms", "1999999999");
-        put("yarn.allocator.sleep.ms", "10");
       }
     });
 
@@ -93,19 +91,6 @@ public class TestContainerAllocator {
     return new MapConfig(map);
   }
 
-  private static JobModelManager getJobModelReader(int containerCount) {
-    //Ideally, the JobModelReader should be constructed independent of HttpServer.
-    //That way it becomes easier to mock objects. Save it for later.
-
-    HttpServer server = new MockHttpServer("/", 7777, null, new ServletHolder(DefaultServlet.class));
-    Map<Integer, ContainerModel> containers = new java.util.HashMap<>();
-    for (int i = 0; i < containerCount; i++) {
-      ContainerModel container = new ContainerModel(i, new HashMap<TaskName, TaskModel>());
-      containers.put(i, container);
-    }
-    JobModel jobModel = new JobModel(getConfig(), containers);
-    return new JobModelManager(jobModel, server, null);
-  }
 
 
   /**
@@ -130,12 +115,12 @@ public class TestContainerAllocator {
    */
   @Test
   public void testRequestContainers() throws Exception {
-    Map<Integer, String> containersToHostMapping = new HashMap<Integer, String>() {
+    Map<String, String> containersToHostMapping = new HashMap<String, String>() {
       {
-        put(0, "abc");
-        put(1, "def");
-        put(2, null);
-        put(3, "abc");
+        put("0", null);
+        put("1", null);
+        put("2", null);
+        put("3", null);
       }
     };
 
@@ -160,9 +145,9 @@ public class TestContainerAllocator {
   @Test
   public void testRequestContainersWithNoMapping() throws Exception {
     int containerCount = 4;
-    Map<Integer, String> containersToHostMapping = new HashMap<Integer, String>();
+    Map<String, String> containersToHostMapping = new HashMap<String, String>();
     for (int i = 0; i < containerCount; i++) {
-      containersToHostMapping.put(i, null);
+      containersToHostMapping.put(String.valueOf(i), null);
     }
     allocatorThread.start();
 
@@ -208,7 +193,7 @@ public class TestContainerAllocator {
 
     allocatorThread.start();
 
-    containerAllocator.requestResource(0, "abc");
+    containerAllocator.requestResource("0", "abc");
 
     containerAllocator.addResource(resource);
     containerAllocator.addResource(resource1);
@@ -245,11 +230,11 @@ public class TestContainerAllocator {
             assertEquals(2, requestState.assignedRequests.size());
 
             SamzaResourceRequest request = requestState.assignedRequests.remove();
-            assertEquals(0, request.getContainerID());
+            assertEquals("0", request.getContainerID());
             assertEquals("2", request.getPreferredHost());
 
             request = requestState.assignedRequests.remove();
-            assertEquals(0, request.getContainerID());
+            assertEquals("0", request.getContainerID());
             assertEquals("ANY_HOST", request.getPreferredHost());
 
             // This routine should be called after the retry is assigned, but before it's started.
@@ -261,7 +246,7 @@ public class TestContainerAllocator {
     state.neededContainers.set(1);
     requestState.registerContainerListener(listener);
 
-    containerAllocator.requestResource(0, "2");
+    containerAllocator.requestResource("0", "2");
     containerAllocator.addResource(container);
     containerAllocator.addResource(container1);
     allocatorThread.start();

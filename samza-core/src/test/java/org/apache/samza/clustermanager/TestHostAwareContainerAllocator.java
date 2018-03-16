@@ -26,12 +26,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.samza.config.Config;
 import org.apache.samza.config.MapConfig;
-import org.apache.samza.container.TaskName;
+import org.apache.samza.container.LocalityManager;
 import org.apache.samza.coordinator.JobModelManager;
-import org.apache.samza.coordinator.server.HttpServer;
-import org.apache.samza.job.model.ContainerModel;
-import org.apache.samza.job.model.JobModel;
-import org.apache.samza.job.model.TaskModel;
+import org.apache.samza.coordinator.JobModelManagerTestUtil;
+import org.apache.samza.coordinator.stream.messages.SetContainerHostMapping;
+import org.apache.samza.testUtils.MockHttpServer;
 import org.eclipse.jetty.servlet.DefaultServlet;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.junit.After;
@@ -42,13 +41,28 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class TestHostAwareContainerAllocator {
 
   private final MockClusterResourceManagerCallback callback = new MockClusterResourceManagerCallback();
   private final MockClusterResourceManager manager = new MockClusterResourceManager(callback);
   private final Config config = getConfig();
-  private final JobModelManager reader = getJobModelManager(1);
+  private final JobModelManager reader = initializeJobModelManager(config, 1);
+
+  private JobModelManager initializeJobModelManager(Config config, int containerCount) {
+    Map<String, Map<String, String>> localityMap = new HashMap<>();
+    localityMap.put("0", new HashMap<String, String>() { {
+        put(SetContainerHostMapping.HOST_KEY, "abc");
+      } });
+    LocalityManager mockLocalityManager = mock(LocalityManager.class);
+    when(mockLocalityManager.readContainerLocality()).thenReturn(localityMap);
+
+    return JobModelManagerTestUtil.getJobModelManagerWithLocalityManager(getConfig(), containerCount, mockLocalityManager,
+        new MockHttpServer("/", 7777, null, new ServletHolder(DefaultServlet.class)));
+  }
+
   private final SamzaApplicationState state = new SamzaApplicationState(reader);
   private HostAwareContainerAllocator containerAllocator;
   private final int timeoutMillis = 1000;
@@ -65,16 +79,15 @@ public class TestHostAwareContainerAllocator {
     allocatorThread = new Thread(containerAllocator);
   }
 
-
   /**
    * Test request containers with no containerToHostMapping makes the right number of requests
    */
   @Test
   public void testRequestContainersWithNoMapping() throws Exception {
     int containerCount = 4;
-    Map<Integer, String> containersToHostMapping = new HashMap<Integer, String>();
+    Map<String, String> containersToHostMapping = new HashMap<String, String>();
     for (int i = 0; i < containerCount; i++) {
-      containersToHostMapping.put(i, null);
+      containersToHostMapping.put(String.valueOf(i), null);
     }
 
     allocatorThread.start();
@@ -95,10 +108,10 @@ public class TestHostAwareContainerAllocator {
    */
   @Test
   public void testAddContainerWithHostAffinity() throws Exception {
-    containerAllocator.requestResources(new HashMap<Integer, String>() {
+    containerAllocator.requestResources(new HashMap<String, String>() {
       {
-        put(0, "abc");
-        put(1, "xyz");
+        put("0", "abc");
+        put("1", "xyz");
       }
     });
 
@@ -153,7 +166,7 @@ public class TestHostAwareContainerAllocator {
 
     allocatorThread.start();
 
-    containerAllocator.requestResource(0, "abc");
+    containerAllocator.requestResource("0", "abc");
 
     containerAllocator.addResource(resource0);
     containerAllocator.addResource(resource1);
@@ -162,17 +175,14 @@ public class TestHostAwareContainerAllocator {
     listener.verify();
   }
 
-
-
-
   @Test
   public void testRequestContainers() throws Exception {
-    Map<Integer, String> containersToHostMapping = new HashMap<Integer, String>() {
+    Map<String, String> containersToHostMapping = new HashMap<String, String>() {
       {
-        put(0, "abc");
-        put(1, "def");
-        put(2, null);
-        put(3, "abc");
+        put("0", "abc");
+        put("1", "def");
+        put("2", null);
+        put("3", "abc");
       }
     };
 
@@ -221,11 +231,11 @@ public class TestHostAwareContainerAllocator {
             assertEquals(2, requestState.assignedRequests.size());
 
             SamzaResourceRequest request = requestState.assignedRequests.remove();
-            assertEquals(0, request.getContainerID());
+            assertEquals("0", request.getContainerID());
             assertEquals("2", request.getPreferredHost());
 
             request = requestState.assignedRequests.remove();
-            assertEquals(0, request.getContainerID());
+            assertEquals("0", request.getContainerID());
             assertEquals("ANY_HOST", request.getPreferredHost());
 
             // This routine should be called after the retry is assigned, but before it's started.
@@ -238,7 +248,7 @@ public class TestHostAwareContainerAllocator {
     requestState.registerContainerListener(listener);
 
     // Only request 1 container and we should see 2 assignments in the assertions above (because of the retry)
-    containerAllocator.requestResource(0, "2");
+    containerAllocator.requestResource("0", "2");
     containerAllocator.addResource(container1);
     containerAllocator.addResource(container);
 
@@ -257,10 +267,10 @@ public class TestHostAwareContainerAllocator {
     final SamzaResource resource0 = new SamzaResource(1, 1000, "xyz", "id1");
     final SamzaResource resource1 = new SamzaResource(1, 1000, "zzz", "id2");
 
-    Map<Integer, String> containersToHostMapping = new HashMap<Integer, String>() {
+    Map<String, String> containersToHostMapping = new HashMap<String, String>() {
       {
-        put(0, "abc");
-        put(1, "def");
+        put("0", "abc");
+        put("1", "def");
       }
     };
     containerAllocator.requestResources(containersToHostMapping);
@@ -315,22 +325,21 @@ public class TestHostAwareContainerAllocator {
     containerAllocator.stop();
   }
 
-
   private static Config getConfig() {
     Config config = new MapConfig(new HashMap<String, String>() {
       {
-        put("yarn.container.count", "1");
-        put("systems.test-system.samza.factory", "org.apache.samza.job.yarn.MockSystemFactory");
-        put("yarn.container.memory.mb", "512");
+        put("cluster-manager.container.count", "1");
+        put("cluster-manager.container.retry.count", "1");
+        put("cluster-manager.container.retry.window.ms", "1999999999");
+        put("cluster-manager.container.request.timeout.ms", "3");
+        put("cluster-manager.allocator.sleep.ms", "1");
+        put("cluster-manager.container.memory.mb", "512");
         put("yarn.package.path", "/foo");
         put("task.inputs", "test-system.test-stream");
+        put("systems.test-system.samza.factory", "org.apache.samza.system.MockSystemFactory");
         put("systems.test-system.samza.key.serde", "org.apache.samza.serializers.JsonSerde");
         put("systems.test-system.samza.msg.serde", "org.apache.samza.serializers.JsonSerde");
-        put("yarn.container.retry.count", "1");
-        put("yarn.container.retry.window.ms", "1999999999");
-        put("yarn.samza.host-affinity.enabled", "true");
-        put("yarn.container.request.timeout.ms", "3");
-        put("yarn.allocator.sleep.ms", "1");
+        put("job.host-affinity.enabled", "true");
       }
     });
 
@@ -338,20 +347,5 @@ public class TestHostAwareContainerAllocator {
     map.putAll(config);
     return new MapConfig(map);
   }
-
-  private static JobModelManager getJobModelManager(int containerCount) {
-    //Ideally, the JobModelReader should be constructed independent of HttpServer.
-    //That way it becomes easier to mock objects. Save it for later.
-
-    HttpServer server = new MockHttpServer("/", 7777, null, new ServletHolder(DefaultServlet.class));
-    Map<Integer, ContainerModel> containers = new java.util.HashMap<>();
-    for (int i = 0; i < containerCount; i++) {
-      ContainerModel container = new ContainerModel(i, new HashMap<TaskName, TaskModel>());
-      containers.put(i, container);
-    }
-    JobModel jobModel = new JobModel(getConfig(), containers);
-    return new JobModelManager(jobModel, server, null);
-  }
-
 
 }

@@ -19,7 +19,7 @@
 
 package org.apache.samza.storage.kv
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import java.util
 
 /**
@@ -36,7 +36,7 @@ class MockKeyValueStore extends KeyValueStore[String, String] {
   }
 
   override def putAll(entries: java.util.List[Entry[String, String]]) {
-    for (entry <- entries) {
+    for (entry <- entries.asScala) {
       kvMap.put(entry.getKey, entry.getValue)
     }
   }
@@ -69,12 +69,4 @@ class MockKeyValueStore extends KeyValueStore[String, String] {
   override def flush() {}  // no-op
 
   override def close() { kvMap.clear() }
-
-  override def deleteAll(keys: java.util.List[String]) {
-    KeyValueStore.Extension.deleteAll(this, keys)
-  }
-
-  override def getAll(keys: java.util.List[String]): java.util.Map[String, String] = {
-    KeyValueStore.Extension.getAll(this, keys)
-  }
 }

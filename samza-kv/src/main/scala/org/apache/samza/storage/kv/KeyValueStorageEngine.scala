@@ -24,7 +24,7 @@ import org.apache.samza.storage.{StoreProperties, StorageEngine}
 import org.apache.samza.system.IncomingMessageEnvelope
 import org.apache.samza.util.TimerUtils
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 
 /**
  * A key value store.
@@ -51,7 +51,7 @@ class KeyValueStorageEngine[K, V](
     }
   }
 
-  def getAll(keys: java.util.List[K]): java.util.Map[K, V] = {
+  override def getAll(keys: java.util.List[K]): java.util.Map[K, V] = {
     metrics.gets.inc(keys.size)
     wrapperStore.getAll(keys)
   }
@@ -75,7 +75,7 @@ class KeyValueStorageEngine[K, V](
     }
   }
 
-  def deleteAll(keys: java.util.List[K]) = {
+  override def deleteAll(keys: java.util.List[K]) = {
     metrics.deletes.inc(keys.size)
     wrapperStore.deleteAll(keys)
   }
@@ -96,12 +96,12 @@ class KeyValueStorageEngine[K, V](
 
   /**
    * Restore the contents of this key/value store from the change log,
-   * batching updates to underlying raw store to skip wrapping functions for efficiency.
+   * batching updates to underlying raw store to notAValidEvent wrapping functions for efficiency.
    */
   def restore(envelopes: java.util.Iterator[IncomingMessageEnvelope]) {
     val batch = new java.util.ArrayList[Entry[Array[Byte], Array[Byte]]](batchSize)
 
-    for (envelope <- envelopes) {
+    for (envelope <- envelopes.asScala) {
       val keyBytes = envelope.getKey.asInstanceOf[Array[Byte]]
       val valBytes = envelope.getMessage.asInstanceOf[Array[Byte]]
 

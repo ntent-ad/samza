@@ -20,10 +20,13 @@
 package org.apache.samza.serializers
 
 import org.apache.samza.SamzaException
-import org.apache.samza.config.SerializerConfig
+import org.apache.samza.system.ControlMessage
 import org.apache.samza.system.SystemStream
 import org.apache.samza.system.OutgoingMessageEnvelope
 import org.apache.samza.system.IncomingMessageEnvelope
+import org.apache.samza.config.StorageConfig
+import org.apache.samza.system.WatermarkMessage
+
 
 class SerdeManager(
   serdes: Map[String, Serde[Object]] = Map(),
@@ -31,16 +34,23 @@ class SerdeManager(
   systemMessageSerdes: Map[String, Serde[Object]] = Map(),
   systemStreamKeySerdes: Map[SystemStream, Serde[Object]] = Map(),
   systemStreamMessageSerdes: Map[SystemStream, Serde[Object]] = Map(),
-  changeLogSystemStreams: Set[SystemStream] = Set()) {
+  changeLogSystemStreams: Set[SystemStream] = Set(),
+  controlMessageKeySerdes: Map[SystemStream, Serde[String]] = Map(),
+  intermediateMessageSerdes: Map[SystemStream, Serde[Object]] = Map()) {
 
   def toBytes(obj: Object, serializerName: String) = serdes
     .getOrElse(serializerName, throw new SamzaException("No serde defined for %s" format serializerName))
     .toBytes(obj)
 
   def toBytes(envelope: OutgoingMessageEnvelope): OutgoingMessageEnvelope = {
-    val key = if (changeLogSystemStreams.contains(envelope.getSystemStream)) {
+    val key = if (changeLogSystemStreams.contains(envelope.getSystemStream)
+      || envelope.getSystemStream.getStream.endsWith(StorageConfig.ACCESSLOG_STREAM_SUFFIX)) {
       // If the stream is a change log stream, don't do any serde. It is up to storage engines to handle serde.
       envelope.getKey
+    } else if (envelope.getMessage.isInstanceOf[ControlMessage]
+      && controlMessageKeySerdes.contains(envelope.getSystemStream)) {
+      // If the message is a control message and the key needs to serialize
+      controlMessageKeySerdes(envelope.getSystemStream).toBytes(envelope.getKey.asInstanceOf[String])
     } else if (envelope.getKeySerializerName != null) {
       // If a serde is defined, use it.
       toBytes(envelope.getKey, envelope.getKeySerializerName)
@@ -55,9 +65,13 @@ class SerdeManager(
       envelope.getKey
     }
 
-    val message = if (changeLogSystemStreams.contains(envelope.getSystemStream)) {
+    val message = if (changeLogSystemStreams.contains(envelope.getSystemStream)
+      || envelope.getSystemStream.getStream.endsWith(StorageConfig.ACCESSLOG_STREAM_SUFFIX)) {
       // If the stream is a change log stream, don't do any serde. It is up to storage engines to handle serde.
       envelope.getMessage
+    } else if (intermediateMessageSerdes.contains(envelope.getSystemStream)) {
+      // If the stream is an intermediate stream, use the intermediate message serde
+      intermediateMessageSerdes(envelope.getSystemStream).toBytes(envelope.getMessage)
     } else if (envelope.getMessageSerializerName != null) {
       // If a serde is defined, use it.
       toBytes(envelope.getMessage, envelope.getMessageSerializerName)
@@ -90,32 +104,43 @@ class SerdeManager(
     .fromBytes(bytes)
 
   def fromBytes(envelope: IncomingMessageEnvelope) = {
-    val key = if (changeLogSystemStreams.contains(envelope.getSystemStreamPartition.getSystemStream)) {
+    val systemStream = envelope.getSystemStreamPartition.getSystemStream
+
+    val message = if (changeLogSystemStreams.contains(systemStream)
+      || systemStream.getStream.endsWith(StorageConfig.ACCESSLOG_STREAM_SUFFIX)) {
       // If the stream is a change log stream, don't do any serde. It is up to storage engines to handle serde.
-      envelope.getKey
-    } else if (systemStreamKeySerdes.contains(envelope.getSystemStreamPartition)) {
+      envelope.getMessage
+    } else if (intermediateMessageSerdes.contains(systemStream)) {
+      // If the stream is an intermediate stream, use the intermediate message serde
+      intermediateMessageSerdes(systemStream).fromBytes(envelope.getMessage.asInstanceOf[Array[Byte]])
+    } else if (systemStreamMessageSerdes.contains(systemStream)) {
       // If the stream has a serde defined, use it.
-      systemStreamKeySerdes(envelope.getSystemStreamPartition).fromBytes(envelope.getKey.asInstanceOf[Array[Byte]])
-    } else if (systemKeySerdes.contains(envelope.getSystemStreamPartition.getSystem)) {
+      systemStreamMessageSerdes(systemStream).fromBytes(envelope.getMessage.asInstanceOf[Array[Byte]])
+    } else if (systemMessageSerdes.contains(systemStream.getSystem)) {
       // If the system has a serde defined, use it.
-      systemKeySerdes(envelope.getSystemStreamPartition.getSystem).fromBytes(envelope.getKey.asInstanceOf[Array[Byte]])
+      systemMessageSerdes(systemStream.getSystem).fromBytes(envelope.getMessage.asInstanceOf[Array[Byte]])
     } else {
       // Just use the object.
-      envelope.getKey
+      envelope.getMessage
     }
 
-    val message = if (changeLogSystemStreams.contains(envelope.getSystemStreamPartition.getSystemStream)) {
+    val key = if (changeLogSystemStreams.contains(systemStream)
+      || systemStream.getStream.endsWith(StorageConfig.ACCESSLOG_STREAM_SUFFIX) ) {
       // If the stream is a change log stream, don't do any serde. It is up to storage engines to handle serde.
-      envelope.getMessage
-    } else if (systemStreamMessageSerdes.contains(envelope.getSystemStreamPartition)) {
+      envelope.getKey
+    } else if (message.isInstanceOf[ControlMessage]
+      && controlMessageKeySerdes.contains(systemStream)) {
+      // If the message is a control message and the key needs to deserialize
+      controlMessageKeySerdes(systemStream).fromBytes(envelope.getKey.asInstanceOf[Array[Byte]])
+    } else if (systemStreamKeySerdes.contains(systemStream)) {
       // If the stream has a serde defined, use it.
-      systemStreamMessageSerdes(envelope.getSystemStreamPartition).fromBytes(envelope.getMessage.asInstanceOf[Array[Byte]])
-    } else if (systemMessageSerdes.contains(envelope.getSystemStreamPartition.getSystem)) {
+      systemStreamKeySerdes(systemStream).fromBytes(envelope.getKey.asInstanceOf[Array[Byte]])
+    } else if (systemKeySerdes.contains(systemStream.getSystem)) {
       // If the system has a serde defined, use it.
-      systemMessageSerdes(envelope.getSystemStreamPartition.getSystem).fromBytes(envelope.getMessage.asInstanceOf[Array[Byte]])
+      systemKeySerdes(systemStream.getSystem).fromBytes(envelope.getKey.asInstanceOf[Array[Byte]])
     } else {
       // Just use the object.
-      envelope.getMessage
+      envelope.getKey
     }
 
     if ((key eq envelope.getKey) && (message eq envelope.getMessage)) {

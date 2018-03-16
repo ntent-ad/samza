@@ -26,13 +26,13 @@ import org.apache.samza.task.AsyncRunLoop;
 import org.apache.samza.util.HighResolutionClock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import scala.collection.JavaConversions;
-import scala.runtime.AbstractFunction0;
+import scala.collection.JavaConverters;
 import scala.runtime.AbstractFunction1;
 
 import java.util.concurrent.ExecutorService;
 
 import static org.apache.samza.util.Util.asScalaClock;
+import static org.apache.samza.util.ScalaToJavaUtils.defaultValue;
 
 /**
  * Factory class to create runloop for a Samza task, based on the type
@@ -55,11 +55,11 @@ public class RunLoopFactory {
 
     long taskWindowMs = config.getWindowMs().getOrElse(defaultValue(DEFAULT_WINDOW_MS));
 
-    log.info("Got window milliseconds: " + taskWindowMs);
+    log.info("Got window milliseconds: {}.", taskWindowMs);
 
     long taskCommitMs = config.getCommitMs().getOrElse(defaultValue(DEFAULT_COMMIT_MS));
 
-    log.info("Got commit milliseconds: " + taskCommitMs);
+    log.info("Got commit milliseconds: {}.", taskCommitMs);
 
     int asyncTaskCount = taskInstances.values().count(new AbstractFunction1<TaskInstance, Object>() {
       @Override
@@ -87,16 +87,20 @@ public class RunLoopFactory {
     } else {
       Integer taskMaxConcurrency = config.getMaxConcurrency().getOrElse(defaultValue(1));
 
-      log.info("Got max messages in flight: " + taskMaxConcurrency);
+      log.info("Got taskMaxConcurrency: {}.", taskMaxConcurrency);
+
+      boolean isAsyncCommitEnabled = config.getAsyncCommit().getOrElse(defaultValue(false));
+
+      log.info("Got asyncCommitEnabled: {}.", isAsyncCommitEnabled);
 
       Long callbackTimeout = config.getCallbackTimeoutMs().getOrElse(defaultValue(DEFAULT_CALLBACK_TIMEOUT_MS));
 
-      log.info("Got callback timeout: " + callbackTimeout);
+      log.info("Got callbackTimeout: {}.", callbackTimeout);
 
       log.info("Run loop in asynchronous mode.");
 
       return new AsyncRunLoop(
-        JavaConversions.mapAsJavaMap(taskInstances),
+        JavaConverters.mapAsJavaMapConverter(taskInstances).asJava(),
         threadPool,
         consumerMultiplexer,
         taskMaxConcurrency,
@@ -105,22 +109,9 @@ public class RunLoopFactory {
         callbackTimeout,
         maxThrottlingDelayMs,
         containerMetrics,
-        clock);
+        clock,
+        isAsyncCommitEnabled);
     }
   }
 
-  /**
-   * Returns a default value object for scala option.getOrDefault() to use
-   * @param value default value
-   * @param <T> value type
-   * @return object containing default value
-   */
-  public static <T> AbstractFunction0<T> defaultValue(final T value) {
-    return new AbstractFunction0<T>() {
-      @Override
-      public T apply() {
-        return value;
-      }
-    };
-  }
 }

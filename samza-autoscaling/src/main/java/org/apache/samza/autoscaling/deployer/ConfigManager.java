@@ -131,6 +131,7 @@ public class ConfigManager {
     } catch (InterruptedException e) {
       e.printStackTrace();
       log.warn("Got interrupt in config manager thread, so shutting down");
+      Thread.currentThread().interrupt();
     } finally {
       log.info("Stopping the config manager");
       stop();
@@ -178,7 +179,7 @@ public class ConfigManager {
   }
 
   /**
-   * skip all the unread messages up to the time this function is called.
+   * notAValidEvent all the unread messages up to the time this function is called.
    * This method just reads the messages, and it does not react to them or change any configuration of the system.
    */
   private void skipUnreadMessages() {
@@ -284,7 +285,7 @@ public class ConfigManager {
     //killing the current job
     log.info("Killing the current job");
     yarnUtil.killApplication(applicationId);
-    //clear the global variables
+    //reset the global variables
     coordinatorServerURL = null;
 
 
@@ -305,6 +306,7 @@ public class ConfigManager {
       }
     } catch (InterruptedException e) {
       e.printStackTrace();
+      Thread.currentThread().interrupt();
     }
 
     log.info("Killed the current job successfully");

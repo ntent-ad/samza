@@ -28,7 +28,8 @@ import org.apache.samza.system.SystemStreamPartition
 import org.junit.Assert._
 import org.junit.Test
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 class TestCheckpointSerde {
   @Test
@@ -37,7 +38,7 @@ class TestCheckpointSerde {
     var offsets = Map[SystemStreamPartition, String]()
     val systemStreamPartition = new SystemStreamPartition("test-system", "test-stream", new Partition(777))
     offsets += systemStreamPartition -> "1"
-    val deserializedOffsets = serde.fromBytes(serde.toBytes(new Checkpoint(offsets)))
+    val deserializedOffsets = serde.fromBytes(serde.toBytes(new Checkpoint(offsets.asJava)))
     assertEquals("1", deserializedOffsets.getOffsets.get(systemStreamPartition))
     assertEquals(1, deserializedOffsets.getOffsets.size)
   }
@@ -57,4 +58,11 @@ class TestCheckpointSerde {
     assertNotSame(mapping, backToMap)
   }
 
+  @Test
+  def testNullCheckpointSerde: Unit = {
+    val checkpointBytes = null.asInstanceOf[Array[Byte]]
+    val checkpointSerde = new CheckpointSerde
+    val checkpoint = checkpointSerde.fromBytes(checkpointBytes)
+    assertNull(checkpoint)
+  }
 }

@@ -37,7 +37,7 @@ import org.apache.samza.task.TaskInstanceCollector
 import org.apache.samza.util.{CommandLine, Logging, Util}
 import org.apache.samza.{Partition, SamzaException}
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.util.Random
 
 /**
@@ -62,6 +62,7 @@ object TestKeyValuePerformance extends Logging {
   val testMethods: Map[String, (KeyValueStorageEngine[Array[Byte], Array[Byte]], Config) => Unit] = Map(
     "all-with-deletes" -> runTestAllWithDeletes,
     "rocksdb-write-performance" -> runTestMsgWritePerformance,
+    "rocksdb-concurrent-write-performance" -> runTestConcurrentMsgWritePerformance,
     "get-all-vs-get-write-many-read-many" -> runTestGetAllVsGetWriteManyReadMany,
     "get-all-vs-get-write-once-read-many" -> runTestGetAllVsGetWriteOnceReadMany)
 
@@ -107,7 +108,6 @@ object TestKeyValuePerformance extends Logging {
         //Create a new DB instance for each test set
         val output = new File("/tmp/" + UUID.randomUUID())
         val byteSerde = new ByteSerde
-        info("Using output directory %s for %s using %s." format (output, storeName, storageEngine.getClass.getCanonicalName))
         val engine = storageEngine.getStorageEngine(
           storeName,
           output,
@@ -116,7 +116,7 @@ object TestKeyValuePerformance extends Logging {
           new TaskInstanceCollector(producerMultiplexer),
           new MetricsRegistryMap,
           null,
-          new SamzaContainerContext(0, config, taskNames)
+          new SamzaContainerContext("0", config, taskNames, new MetricsRegistryMap)
         )
 
         val db = if(!engine.isInstanceOf[KeyValueStorageEngine[_,_]]) {
@@ -128,7 +128,6 @@ object TestKeyValuePerformance extends Logging {
         // Run the test method
         testMethod(db, config.subset("set-" + testSet + ".", true))
 
-        info("Cleaning up output directory for %s." format storeName)
         Util.rm(output)
       })
     }
@@ -149,6 +148,14 @@ object TestKeyValuePerformance extends Logging {
 
     info("Using (message count, message size in bytes) => (%s, %s)" format (messageCount, messageSizeBytes))
     new TestKeyValuePerformance().testMsgWritePerformance(db, messageCount, messageSizeBytes)
+  }
+
+  def runTestConcurrentMsgWritePerformance(db: KeyValueStore[Array[Byte], Array[Byte]], config: Config) {
+    val messageSizeBytes = config.getInt("message.size", 200)
+    val messageCount = config.getInt("message.count", 100000)
+    val numThreads = config.getInt("num.threads", 4)
+
+    new TestKeyValuePerformance().testConcurrentMsgWritePerformance(db, messageCount, messageSizeBytes, numThreads)
   }
 
   def runTestGetAllVsGetWriteManyReadMany(db: KeyValueStore[Array[Byte], Array[Byte]], config: Config) {
@@ -230,6 +237,32 @@ class TestKeyValuePerformance extends Logging {
     info("Total time to write %d msgs of size %d bytes : %s s" format (numMsgs, msgSizeInBytes, timeTaken * .001))
   }
 
+  def testConcurrentMsgWritePerformance(
+    store: KeyValueStore[Array[Byte], Array[Byte]],
+    numMsgs: Int = 100000,
+    msgSizeInBytes: Int = 200,
+    numThreads: Int = 4) {
+
+    val msg = (0 until msgSizeInBytes).map(i => "x").mkString.getBytes(Encoding)
+    def createThread(name: String): Thread = new Thread(new Runnable {
+      override def run() = {
+        (0 until numMsgs).foreach(i => {
+          store.put(i.toString.getBytes(Encoding), msg)
+        })
+      }
+    }, name)
+
+    val threads = (0 until numThreads).map(i => createThread(s"Writer $i"))
+
+    val start = System.currentTimeMillis
+    threads.foreach(_.start())
+    threads.foreach(_.join())
+    val timeTaken = System.currentTimeMillis - start
+
+    info("Total time to write %d msgs of size %d bytes with %s threads: %s sec"
+      format (numMsgs, msgSizeInBytes, numThreads, timeTaken * .001))
+  }
+
   /**
    * Test that ::getAll performance is better than that of ::get (test when there are many writes and many reads).
    * @param store key-value store instance that is being tested
@@ -258,7 +291,7 @@ class TestKeyValuePerformance extends Logging {
         store.flush()
 
         timer.reset().start()
-        assert(store.getAll(shuffledKeys).size == shuffledKeys.size)
+        assert(store.getAll(shuffledKeys.asJava).size == shuffledKeys.size)
         val getAllTime = timer.stop().elapsed(TimeUnit.MILLISECONDS)
 
         // Restore cache, in case it's enabled, to a state similar to the one above when the getAll test started
@@ -312,9 +345,9 @@ class TestKeyValuePerformance extends Logging {
         val shuffledKeys = Random.shuffle(keys).take(messagesCountPerBatch)
 
         // We want to measure ::getAll when called many times, so populate the cache because first call is a cache-miss
-        val totalSize = store.getAll(shuffledKeys).values.map(_.length).sum
+        val totalSize = store.getAll(shuffledKeys.asJava).values.asScala.map(_.length).sum
         timer.reset().start()
-        assert(store.getAll(shuffledKeys).size == shuffledKeys.size)
+        assert(store.getAll(shuffledKeys.asJava).size == shuffledKeys.size)
         val getAllTime = timer.stop().elapsed(TimeUnit.MILLISECONDS)
 
         // We want to measure ::get when called many times, so populate the cache because first call is a cache-miss

@@ -19,26 +19,42 @@
 package org.apache.samza.operators.functions;
 
 import org.apache.samza.annotation.InterfaceStability;
-import org.apache.samza.operators.data.MessageEnvelope;
 
 
 /**
- * A function that joins {@link MessageEnvelope}s from two {@link org.apache.samza.operators.MessageStream}s and produces
- * a joined {@link MessageEnvelope}.
- * @param <M>  type of the input {@link MessageEnvelope}
- * @param <JM>  type of the {@link MessageEnvelope} to join with
- * @param <RM>  type of the joined {@link MessageEnvelope}
+ * Joins incoming messages in two streams by key.
+ *
+ * @param <K>  type of the join key
+ * @param <M>  type of the input message
+ * @param <JM>  type of the message to join with
+ * @param <RM>  type of the joined message
  */
 @InterfaceStability.Unstable
-@FunctionalInterface
-public interface JoinFunction<M extends MessageEnvelope, JM extends MessageEnvelope, RM extends MessageEnvelope> {
+public interface JoinFunction<K, M, JM, RM>  extends InitableFunction, ClosableFunction {
 
   /**
-   * Join the provided {@link MessageEnvelope}s and produces the joined {@link MessageEnvelope}.
-   * @param message  the input {@link MessageEnvelope}
-   * @param otherMessage  the {@link MessageEnvelope} to join with
-   * @return  the joined {@link MessageEnvelope}
+   * Joins the provided messages and returns the joined message.
+   *
+   * @param message  the input message
+   * @param otherMessage  the message to join with
+   * @return  the joined message
    */
   RM apply(M message, JM otherMessage);
+
+  /**
+   * Get the join key for messages in the first input stream.
+   *
+   * @param message  the message in the first input stream
+   * @return  the join key
+   */
+  K getFirstKey(M message);
+
+  /**
+   * Get the join key for messages in the second input stream.
+   *
+   * @param message  the message in the second input stream
+   * @return  the join key
+   */
+  K getSecondKey(JM message);
 
 }

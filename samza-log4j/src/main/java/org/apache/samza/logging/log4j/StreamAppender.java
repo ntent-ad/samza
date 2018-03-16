@@ -20,7 +20,6 @@
 package org.apache.samza.logging.log4j;
 
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
 import java.net.URL;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -115,8 +114,9 @@ public class StreamAppender extends AppenderSkeleton {
               new OutgoingMessageEnvelope(systemStream, key.getBytes("UTF-8"), serde.toBytes(subLog(event)));
           systemProducer.send(SOURCE, outgoingMessageEnvelope);
         }
-      } catch (UnsupportedEncodingException e) {
-        throw new SamzaException("can not send the log messages", e);
+      } catch (Exception e) {
+        System.err.println("[StreamAppender] Error sending log message:");
+        e.printStackTrace();
       } finally {
         recursiveCall.set(false);
       }
@@ -246,7 +246,7 @@ public class StreamAppender extends AppenderSkeleton {
       SerdeFactory<LoggingEvent> serdeFactory = Util.<SerdeFactory<LoggingEvent>>getObj(serdeClass);
       serde = serdeFactory.getSerde(systemName, config);
     } else {
-      String serdeKey = String.format(SerializerConfig.SERDE(), serdeName);
+      String serdeKey = String.format(SerializerConfig.SERDE_FACTORY_CLASS(), serdeName);
       throw new SamzaException("Can not find serializers class for key '" + serdeName + "'. Please specify " +
           serdeKey + " property");
     }

@@ -22,11 +22,12 @@ package org.apache.samza.system.kafka
 import java.util.Properties
 import kafka.utils.ZkUtils
 import org.apache.samza.SamzaException
+import org.apache.samza.config.ApplicationConfig.ApplicationMode
 import org.apache.samza.util.{Logging, KafkaUtil, ExponentialSleepStrategy, ClientUtilTopicMetadataStore}
-import org.apache.samza.config.Config
+import org.apache.samza.config.{KafkaConfig, ApplicationConfig, StreamConfig, Config}
 import org.apache.samza.metrics.MetricsRegistry
 import org.apache.samza.config.KafkaConfig.Config2Kafka
-import org.apache.samza.config.JobConfig.Config2Job
+import org.apache.samza.config.TaskConfig.Config2Task
 import org.apache.kafka.clients.producer.KafkaProducer
 import org.apache.samza.system.SystemFactory
 import org.apache.samza.config.StorageConfig._
@@ -97,7 +98,8 @@ class KafkaSystemFactory extends SystemFactory with Logging {
       systemName,
       new ExponentialSleepStrategy(initialDelayMs = producerConfig.reconnectIntervalMs),
       getProducer,
-      metrics)
+      metrics,
+      dropProducerExceptions = config.getDropProducerError)
   }
 
   def getAdmin(systemName: String, config: Config): SystemAdmin = {
@@ -118,12 +120,14 @@ class KafkaSystemFactory extends SystemFactory with Logging {
     // Construct the meta information for each topic, if the replication factor is not defined, we use 2 as the number of replicas for the change log stream.
     val topicMetaInformation = storeToChangelog.map{case (storeName, topicName) =>
     {
-       val replicationFactor = config.getChangelogStreamReplicationFactor(storeName).getOrElse("2").toInt
+       val replicationFactor = config.getChangelogStreamReplicationFactor(storeName).toInt
        val changelogInfo = ChangelogInfo(replicationFactor, config.getChangelogKafkaProperties(storeName))
        info("Creating topic meta information for topic: %s with replication factor: %s" format (topicName, replicationFactor))
        (topicName, changelogInfo)
     }}.toMap
 
+
+    val intermediateStreamProperties: Map[String, Properties] = getIntermediateStreamProperties(config)
     new KafkaSystemAdmin(
       systemName,
       bootstrapServers,
@@ -133,7 +137,8 @@ class KafkaSystemFactory extends SystemFactory with Logging {
       timeout,
       bufferSize,
       clientId,
-      topicMetaInformation)
+      topicMetaInformation,
+      intermediateStreamProperties)
   }
 
   def getCoordinatorTopicProperties(config: Config) = {
@@ -143,4 +148,18 @@ class KafkaSystemFactory extends SystemFactory with Logging {
       "segment.bytes" -> segmentBytes)) { case (props, (k, v)) => props.put(k, v); props }
   }
 
+  def getIntermediateStreamProperties(config : Config): Map[String, Properties] = {
+    val appConfig = new ApplicationConfig(config)
+    if (appConfig.getAppMode == ApplicationMode.BATCH) {
+      val streamConfig = new StreamConfig(config)
+      streamConfig.getStreamIds().filter(streamConfig.getIsIntermediate(_)).map(streamId => {
+        val properties = new Properties()
+        properties.putAll(streamConfig.getStreamProperties(streamId))
+        properties.putIfAbsent("retention.ms", String.valueOf(KafkaConfig.DEFAULT_RETENTION_MS_FOR_BATCH))
+        (streamId, properties)
+      }).toMap
+    } else {
+      Map()
+    }
+  }
 }

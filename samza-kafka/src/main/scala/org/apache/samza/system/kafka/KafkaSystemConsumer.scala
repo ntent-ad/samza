@@ -26,7 +26,6 @@ import kafka.message.MessageAndOffset
 import org.apache.samza.Partition
 import org.apache.kafka.common.utils.Utils
 import org.apache.samza.util.Clock
-import java.util.UUID
 import kafka.serializer.DefaultDecoder
 import kafka.serializer.Decoder
 import org.apache.samza.util.BlockingEnvelopeMap
@@ -37,7 +36,7 @@ import org.apache.samza.util.TopicMetadataStore
 import kafka.api.TopicMetadata
 import org.apache.samza.util.ExponentialSleepStrategy
 import java.util.concurrent.ConcurrentHashMap
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import org.apache.samza.system.SystemAdmin
 
 object KafkaSystemConsumer {
@@ -128,12 +127,11 @@ private[kafka] class KafkaSystemConsumer(
     new Clock {
       def currentTimeMillis = clock()
     },
-    classOf[KafkaSystemConsumerMetrics].getName,
-    fetchLimitByBytesEnabled) with Toss with Logging {
+    classOf[KafkaSystemConsumerMetrics].getName) with Toss with Logging {
 
   type HostPort = (String, Int)
   val brokerProxies = scala.collection.mutable.Map[HostPort, BrokerProxy]()
-  val topicPartitionsAndOffsets: scala.collection.concurrent.Map[TopicAndPartition, String] = new ConcurrentHashMap[TopicAndPartition, String]()
+  val topicPartitionsAndOffsets: scala.collection.concurrent.Map[TopicAndPartition, String] = new ConcurrentHashMap[TopicAndPartition, String]().asScala
   var perPartitionFetchThreshold = fetchThreshold
   var perPartitionFetchThresholdBytes = 0L
 
@@ -195,8 +193,8 @@ private[kafka] class KafkaSystemConsumer(
 
         // addTopicPartition one at a time, leaving the to-be-done list intact in case of exceptions.
         // This avoids trying to re-add the same topic partition repeatedly
-        def refresh(tp: List[TopicAndPartition]) = {
-          val head :: rest = tpToRefresh
+        def refresh() = {
+          val head = tpToRefresh.head
           // refreshBrokers can be called from abdicate and refreshDropped,
           // both of which are triggered from BrokerProxy threads. To prevent
           // accidentally creating multiple objects for the same broker, or
@@ -204,7 +202,7 @@ private[kafka] class KafkaSystemConsumer(
           // we need to lock.
           this.synchronized {
             // Check if we still need this TopicAndPartition inside the
-            // critical section. If we don't, then skip it.
+            // critical section. If we don't, then notAValidEvent it.
             topicPartitionsAndOffsets.get(head) match {
               case Some(nextOffset) =>
                 getHostPort(topicMetadata(head.topic), head.partition) match {
@@ -219,11 +217,11 @@ private[kafka] class KafkaSystemConsumer(
               case _ => debug("Ignoring refresh for %s because we already added it from another thread." format head)
             }
           }
-          rest
+          tpToRefresh.tail
         }
 
         while (!tpToRefresh.isEmpty) {
-          tpToRefresh = refresh(tpToRefresh)
+          tpToRefresh = refresh()
         }
 
         loop.done

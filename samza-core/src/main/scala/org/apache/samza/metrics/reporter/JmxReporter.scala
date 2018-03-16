@@ -31,7 +31,7 @@ import org.apache.samza.metrics.MetricsReporter
 import org.apache.samza.metrics.MetricsReporterFactory
 import org.apache.samza.metrics.ReadableMetricsRegistry
 import org.apache.samza.metrics.ReadableMetricsRegistryListener
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import org.apache.samza.metrics.MetricsVisitor
 import org.apache.samza.metrics.JmxUtil._
 
@@ -45,8 +45,8 @@ class JmxReporter(server: MBeanServer) extends MetricsReporter with Logging {
       registry.listen(listener)
 
       // Second, add all existing metrics.
-      registry.getGroups.foreach(group => {
-        registry.getGroup(group).foreach {
+      registry.getGroups.asScala.foreach(group => {
+        registry.getGroup(group).asScala.foreach {
           case (name, metric) =>
             metric.visit(new MetricsVisitor {
               def counter(counter: Counter) = registerBean(new JmxCounter(counter, getObjectName(group, name, sources(registry))))
@@ -88,7 +88,7 @@ class JmxReporter(server: MBeanServer) extends MetricsReporter with Logging {
   def registerBean(bean: MetricMBean) {
     if (!server.isRegistered(bean.objectName)) {
       debug("Registering MBean for %s." format bean.objectName)
-      server.registerMBean(bean, bean.objectName);
+      server.registerMBean(bean, bean.objectName)
     }
   }
 }

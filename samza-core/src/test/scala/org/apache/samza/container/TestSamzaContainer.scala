@@ -19,60 +19,46 @@
 
 package org.apache.samza.container
 
-import java.lang.Thread.UncaughtExceptionHandler
 import java.util
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
-import org.apache.samza.Partition
+import org.apache.samza.metrics.MetricsRegistryMap
+import org.apache.samza.{SamzaContainerStatus, Partition}
 import org.apache.samza.checkpoint.{Checkpoint, CheckpointManager}
 import org.apache.samza.config.{Config, MapConfig}
 import org.apache.samza.coordinator.JobModelManager
 import org.apache.samza.coordinator.server.{HttpServer, JobServlet}
-import org.apache.samza.job.model.ContainerModel
-import org.apache.samza.job.model.JobModel
-import org.apache.samza.job.model.TaskModel
-import org.apache.samza.serializers._
+import org.apache.samza.job.model.{ContainerModel, JobModel, TaskModel}
+import org.apache.samza.serializers.SerdeManager
 import org.apache.samza.storage.TaskStorageManager
-import org.apache.samza.system.IncomingMessageEnvelope
-import org.apache.samza.system.StreamMetadataCache
-import org.apache.samza.system.SystemConsumer
-import org.apache.samza.system.SystemConsumers
-import org.apache.samza.system.SystemProducer
-import org.apache.samza.system.SystemProducers
-import org.apache.samza.system.SystemStream
-import org.apache.samza.system.SystemStreamPartition
 import org.apache.samza.system.chooser.RoundRobinChooser
-import org.apache.samza.task.ClosableTask
-import org.apache.samza.task.InitableTask
-import org.apache.samza.task.MessageCollector
-import org.apache.samza.task.StreamTask
-import org.apache.samza.task.TaskContext
-import org.apache.samza.task.TaskCoordinator
-import org.apache.samza.task.TaskInstanceCollector
+import org.apache.samza.system.{IncomingMessageEnvelope, StreamMetadataCache, SystemConsumer, SystemConsumers, SystemProducer, SystemProducers, SystemStream, SystemStreamPartition}
+import org.apache.samza.task.{ClosableTask, InitableTask, MessageCollector, StreamTask, TaskContext, TaskCoordinator, TaskInstanceCollector}
 import org.apache.samza.util.SinglePartitionWithoutOffsetsSystemAdmin
 import org.junit.Assert._
 import org.junit.Test
-import org.mockito.Mockito._
 import org.mockito.invocation.InvocationOnMock
 import org.mockito.stubbing.Answer
 import org.scalatest.junit.AssertionsForJUnit
-import org.scalatest.mock.MockitoSugar
+import org.scalatest.mockito.MockitoSugar
 
+import scala.collection.JavaConverters._
+import org.mockito.Mockito.when
 import scala.collection.JavaConversions._
 
 class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
   @Test
   def testReadJobModel {
-    val config = new MapConfig(Map("a" -> "b"))
+    val config = new MapConfig(Map("a" -> "b").asJava)
     val offsets = new util.HashMap[SystemStreamPartition, String]()
     offsets.put(new SystemStreamPartition("system","stream", new Partition(0)), "1")
     val tasks = Map(
       new TaskName("t1") -> new TaskModel(new TaskName("t1"), offsets.keySet(), new Partition(0)),
       new TaskName("t2") -> new TaskModel(new TaskName("t2"), offsets.keySet(), new Partition(0)))
     val containers = Map(
-      Integer.valueOf(0) -> new ContainerModel(0, tasks),
-      Integer.valueOf(1) -> new ContainerModel(1, tasks))
+      "0" -> new ContainerModel("0", 0, tasks),
+      "1" -> new ContainerModel("1", 0, tasks))
     val jobModel = new JobModel(config, containers)
     def jobModelGenerator(): JobModel = jobModel
     val server = new HttpServer
@@ -89,15 +75,15 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
 
   @Test
   def testReadJobModelWithTimeouts {
-    val config = new MapConfig(Map("a" -> "b"))
+    val config = new MapConfig(Map("a" -> "b").asJava)
     val offsets = new util.HashMap[SystemStreamPartition, String]()
     offsets.put(new SystemStreamPartition("system","stream", new Partition(0)), "1")
     val tasks = Map(
       new TaskName("t1") -> new TaskModel(new TaskName("t1"), offsets.keySet(), new Partition(0)),
       new TaskName("t2") -> new TaskModel(new TaskName("t2"), offsets.keySet(), new Partition(0)))
     val containers = Map(
-      Integer.valueOf(0) -> new ContainerModel(0, tasks),
-      Integer.valueOf(1) -> new ContainerModel(1, tasks))
+      "0" -> new ContainerModel("0", 0, tasks),
+      "1" -> new ContainerModel("1", 1, tasks))
     val jobModel = new JobModel(config, containers)
     def jobModelGenerator(): JobModel = jobModel
     val server = new HttpServer
@@ -116,7 +102,7 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
 
   @Test
   def testChangelogPartitions {
-    val config = new MapConfig(Map("a" -> "b"))
+    val config = new MapConfig(Map("a" -> "b").asJava)
     val offsets = new util.HashMap[SystemStreamPartition, String]()
     offsets.put(new SystemStreamPartition("system", "stream", new Partition(0)), "1")
     val tasksForContainer1 = Map(
@@ -126,11 +112,11 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
       new TaskName("t3") -> new TaskModel(new TaskName("t3"), offsets.keySet(), new Partition(2)),
       new TaskName("t4") -> new TaskModel(new TaskName("t4"), offsets.keySet(), new Partition(3)),
       new TaskName("t5") -> new TaskModel(new TaskName("t6"), offsets.keySet(), new Partition(4)))
-    val containerModel1 = new ContainerModel(0, tasksForContainer1)
-    val containerModel2 = new ContainerModel(1, tasksForContainer2)
+    val containerModel1 = new ContainerModel("0", 0, tasksForContainer1)
+    val containerModel2 = new ContainerModel("1", 1, tasksForContainer2)
     val containers = Map(
-      Integer.valueOf(0) -> containerModel1,
-      Integer.valueOf(1) -> containerModel2)
+      "0" -> containerModel1,
+      "1" -> containerModel2)
     val jobModel = new JobModel(config, containers)
     assertEquals(jobModel.maxChangeLogStreamPartitions, 5)
   }
@@ -179,7 +165,7 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
       Map[String, SystemProducer](),
       new SerdeManager)
     val collector = new TaskInstanceCollector(producerMultiplexer)
-    val containerContext = new SamzaContainerContext(0, config, Set[TaskName](taskName))
+    val containerContext = new SamzaContainerContext("0", config, Set[TaskName](taskName), new MetricsRegistryMap)
     val taskInstance: TaskInstance = new TaskInstance(
       task,
       taskName,
@@ -195,50 +181,128 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
       consumerMultiplexer = consumerMultiplexer,
       metrics = new SamzaContainerMetrics,
       maxThrottlingDelayMs = TimeUnit.SECONDS.toMillis(1))
+    @volatile var onContainerFailedCalled = false
+    @volatile var onContainerStopCalled = false
+    @volatile var onContainerStartCalled = false
+    @volatile var onContainerFailedThrowable: Throwable = null
+
     val container = new SamzaContainer(
       containerContext = containerContext,
       taskInstances = Map(taskName -> taskInstance),
       runLoop = runLoop,
       consumerMultiplexer = consumerMultiplexer,
       producerMultiplexer = producerMultiplexer,
-      metrics = new SamzaContainerMetrics,
-      jmxServer = null
-    )
-    try {
-      container.run
-      fail("Expected exception to be thrown in run method.")
-    } catch {
-      case e: Exception => // Expected
-    }
-    assertTrue(task.wasShutdown)
-  }
+      metrics = new SamzaContainerMetrics)
 
-  @Test
-  def testUncaughtExceptionHandler {
-    var caughtException = false
-    val exceptionHandler = new UncaughtExceptionHandler {
-      def uncaughtException(t: Thread, e: Throwable) {
-        caughtException = true
+    val containerListener = new SamzaContainerListener {
+      override def onContainerFailed(t: Throwable): Unit = {
+        onContainerFailedCalled = true
+        onContainerFailedThrowable = t
+      }
+
+      override def onContainerStop(invokedExternally: Boolean): Unit = {
+        onContainerStopCalled = true
+      }
+
+      override def onContainerStart(): Unit = {
+        onContainerStartCalled = true
       }
     }
-    try {
-      SamzaContainer.safeMain(() => null, exceptionHandler)
-    } catch {
-      case _: Exception =>
-      // Expect some random exception from SamzaContainer because we haven't
-      // set any environment variables for container ID, etc.
+    container.setContainerListener(containerListener)
+
+    container.run
+    assertTrue(task.wasShutdown)
+    assertFalse(onContainerStartCalled)
+    assertFalse(onContainerStopCalled)
+
+    assertTrue(onContainerFailedCalled)
+    assertNotNull(onContainerFailedThrowable)
+  }
+
+  // Exception in Runloop should cause SamzaContainer to transition to FAILED status, shutdown the components and then,
+  // invoke the callback
+  @Test
+  def testExceptionInTaskProcessRunLoop() {
+    val task = new StreamTask with InitableTask with ClosableTask {
+      var wasShutdown = false
+
+      def init(config: Config, context: TaskContext) {
+      }
+
+      def process(envelope: IncomingMessageEnvelope, collector: MessageCollector, coordinator: TaskCoordinator) {
+        throw new Exception("Trigger a shutdown, please.")
+      }
+
+      def close {
+        wasShutdown = true
+      }
     }
-    assertFalse(caughtException)
-    val t = new Thread(new Runnable {
-      def run = throw new RuntimeException("Uncaught exception in another thread. Catch this.")
-    })
-    t.start
-    t.join
-    assertTrue(caughtException)
+    val config = new MapConfig
+    val taskName = new TaskName("taskName")
+    val consumerMultiplexer = new SystemConsumers(
+      new RoundRobinChooser,
+      Map[String, SystemConsumer]())
+    val producerMultiplexer = new SystemProducers(
+      Map[String, SystemProducer](),
+      new SerdeManager)
+    val collector = new TaskInstanceCollector(producerMultiplexer)
+    val containerContext = new SamzaContainerContext("0", config, Set[TaskName](taskName), new MetricsRegistryMap)
+    val taskInstance: TaskInstance = new TaskInstance(
+      task,
+      taskName,
+      config,
+      new TaskInstanceMetrics,
+      null,
+      consumerMultiplexer,
+      collector,
+      containerContext
+    )
+
+    @volatile var onContainerFailedCalled = false
+    @volatile var onContainerStopCalled = false
+    @volatile var onContainerStartCalled = false
+    @volatile var onContainerFailedThrowable: Throwable = null
+
+    val mockRunLoop = mock[RunLoop]
+    when(mockRunLoop.run).thenThrow(new RuntimeException("Trigger a shutdown, please."))
+
+    val container = new SamzaContainer(
+      containerContext = containerContext,
+      taskInstances = Map(taskName -> taskInstance),
+      runLoop = mockRunLoop,
+      consumerMultiplexer = consumerMultiplexer,
+      producerMultiplexer = producerMultiplexer,
+      metrics = new SamzaContainerMetrics)
+    val containerListener = new SamzaContainerListener {
+      override def onContainerFailed(t: Throwable): Unit = {
+        onContainerFailedCalled = true
+        onContainerFailedThrowable = t
+      }
+
+      override def onContainerStop(invokedExternally: Boolean): Unit = {
+        onContainerStopCalled = true
+      }
+
+      override def onContainerStart(): Unit = {
+        onContainerStartCalled = true
+      }
+    }
+    container.setContainerListener(containerListener)
+
+    container.run
+    assertTrue(task.wasShutdown)
+    assertTrue(onContainerStartCalled)
+
+    assertFalse(onContainerStopCalled)
+
+    assertTrue(onContainerFailedCalled)
+    assertNotNull(onContainerFailedThrowable)
+
+    assertEquals(SamzaContainerStatus.FAILED, container.getStatus())
   }
 
   @Test
-  def testErrorInTaskInitShutsDownTask {
+  def testErrorInTaskInitShutsDownTask() {
     val task = new StreamTask with InitableTask with ClosableTask {
       var wasShutdown = false
 
@@ -262,7 +326,7 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
       Map[String, SystemProducer](),
       new SerdeManager)
     val collector = new TaskInstanceCollector(producerMultiplexer)
-    val containerContext = new SamzaContainerContext(0, config, Set[TaskName](taskName))
+    val containerContext = new SamzaContainerContext("0", config, Set[TaskName](taskName), new MetricsRegistryMap)
     val taskInstance: TaskInstance = new TaskInstance(
       task,
       taskName,
@@ -278,22 +342,196 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
       consumerMultiplexer = consumerMultiplexer,
       metrics = new SamzaContainerMetrics,
       maxThrottlingDelayMs = TimeUnit.SECONDS.toMillis(1))
+    @volatile var onContainerFailedCalled = false
+    @volatile var onContainerStopCalled = false
+    @volatile var onContainerStartCalled = false
+    @volatile var onContainerFailedThrowable: Throwable = null
+
     val container = new SamzaContainer(
       containerContext = containerContext,
       taskInstances = Map(taskName -> taskInstance),
       runLoop = runLoop,
       consumerMultiplexer = consumerMultiplexer,
       producerMultiplexer = producerMultiplexer,
-      metrics = new SamzaContainerMetrics,
-      jmxServer = null
-    )
-    try {
-      container.run
-      fail("Expected error to be thrown in run method.")
-    } catch {
-      case e: Throwable => // Expected
+      metrics = new SamzaContainerMetrics)
+    val containerListener = new SamzaContainerListener {
+      override def onContainerFailed(t: Throwable): Unit = {
+        onContainerFailedCalled = true
+        onContainerFailedThrowable = t
+      }
+
+      override def onContainerStop(invokedExternally: Boolean): Unit = {
+        onContainerStopCalled = true
+      }
+
+      override def onContainerStart(): Unit = {
+        onContainerStartCalled = true
+      }
     }
+    container.setContainerListener(containerListener)
+
+    container.run
+
     assertTrue(task.wasShutdown)
+
+    assertFalse(onContainerStopCalled)
+    assertFalse(onContainerStartCalled)
+
+    assertTrue(onContainerFailedCalled)
+    assertNotNull(onContainerFailedThrowable)
+  }
+
+  @Test
+  def testRunloopShutdownIsClean(): Unit = {
+    val task = new StreamTask with InitableTask with ClosableTask {
+      var wasShutdown = false
+
+      def init(config: Config, context: TaskContext) {
+      }
+
+      def process(envelope: IncomingMessageEnvelope, collector: MessageCollector, coordinator: TaskCoordinator) {
+      }
+
+      def close {
+        wasShutdown = true
+      }
+    }
+    val config = new MapConfig
+    val taskName = new TaskName("taskName")
+    val consumerMultiplexer = new SystemConsumers(
+      new RoundRobinChooser,
+      Map[String, SystemConsumer]())
+    val producerMultiplexer = new SystemProducers(
+      Map[String, SystemProducer](),
+      new SerdeManager)
+    val collector = new TaskInstanceCollector(producerMultiplexer)
+    val containerContext = new SamzaContainerContext("0", config, Set[TaskName](taskName), new MetricsRegistryMap)
+    val taskInstance: TaskInstance = new TaskInstance(
+      task,
+      taskName,
+      config,
+      new TaskInstanceMetrics,
+      null,
+      consumerMultiplexer,
+      collector,
+      containerContext
+    )
+
+    @volatile var onContainerFailedCalled = false
+    @volatile var onContainerStopCalled = false
+    @volatile var onContainerStartCalled = false
+    @volatile var onContainerFailedThrowable: Throwable = null
+
+    val mockRunLoop = mock[RunLoop]
+    when(mockRunLoop.run).thenAnswer(new Answer[Unit] {
+      override def answer(invocation: InvocationOnMock): Unit = {
+        Thread.sleep(100)
+      }
+    })
+
+    val container = new SamzaContainer(
+      containerContext = containerContext,
+      taskInstances = Map(taskName -> taskInstance),
+      runLoop = mockRunLoop,
+      consumerMultiplexer = consumerMultiplexer,
+      producerMultiplexer = producerMultiplexer,
+      metrics = new SamzaContainerMetrics)
+      val containerListener = new SamzaContainerListener {
+        override def onContainerFailed(t: Throwable): Unit = {
+          onContainerFailedCalled = true
+          onContainerFailedThrowable = t
+        }
+
+        override def onContainerStop(invokedExternally: Boolean): Unit = {
+          onContainerStopCalled = true
+        }
+
+        override def onContainerStart(): Unit = {
+          onContainerStartCalled = true
+        }
+      }
+    container.setContainerListener(containerListener)
+
+    container.run
+    assertFalse(onContainerFailedCalled)
+    assertTrue(onContainerStartCalled)
+    assertTrue(onContainerStopCalled)
+  }
+
+  @Test
+  def testFailureDuringShutdown: Unit = {
+    val task = new StreamTask with InitableTask with ClosableTask {
+      def init(config: Config, context: TaskContext) {
+      }
+
+      def process(envelope: IncomingMessageEnvelope, collector: MessageCollector, coordinator: TaskCoordinator) {
+
+      }
+
+      def close {
+        throw new Exception("Exception during shutdown, please.")
+      }
+    }
+    val config = new MapConfig
+    val taskName = new TaskName("taskName")
+    val consumerMultiplexer = new SystemConsumers(
+      new RoundRobinChooser,
+      Map[String, SystemConsumer]())
+    val producerMultiplexer = new SystemProducers(
+      Map[String, SystemProducer](),
+      new SerdeManager)
+    val collector = new TaskInstanceCollector(producerMultiplexer)
+    val containerContext = new SamzaContainerContext("0", config, Set[TaskName](taskName), new MetricsRegistryMap)
+    val taskInstance: TaskInstance = new TaskInstance(
+      task,
+      taskName,
+      config,
+      new TaskInstanceMetrics,
+      null,
+      consumerMultiplexer,
+      collector,
+      containerContext
+    )
+
+    @volatile var onContainerFailedCalled = false
+    @volatile var onContainerStopCalled = false
+    @volatile var onContainerStartCalled = false
+    @volatile var onContainerFailedThrowable: Throwable = null
+
+    val mockRunLoop = mock[RunLoop]
+    when(mockRunLoop.run).thenAnswer(new Answer[Unit] {
+      override def answer(invocation: InvocationOnMock): Unit = {
+        Thread.sleep(100)
+      }
+    })
+
+    val container = new SamzaContainer(
+      containerContext = containerContext,
+      taskInstances = Map(taskName -> taskInstance),
+      runLoop = mockRunLoop,
+      consumerMultiplexer = consumerMultiplexer,
+      producerMultiplexer = producerMultiplexer,
+      metrics = new SamzaContainerMetrics)
+
+    val containerListener = new SamzaContainerListener {
+        override def onContainerFailed(t: Throwable): Unit = {
+          onContainerFailedCalled = true
+          onContainerFailedThrowable = t
+        }
+
+        override def onContainerStop(invokedExternally: Boolean): Unit = {
+          onContainerStopCalled = true
+        }
+
+        override def onContainerStart(): Unit = {
+          onContainerStartCalled = true
+        }
+      }
+    container.setContainerListener(containerListener)
+
+    container.run
+
+    assertTrue(onContainerFailedCalled)
   }
 
   @Test
@@ -311,7 +549,7 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
       Map[String, SystemProducer](),
       new SerdeManager)
     val collector = new TaskInstanceCollector(producerMultiplexer)
-    val containerContext = new SamzaContainerContext(0, config, Set[TaskName](taskName))
+    val containerContext = new SamzaContainerContext("0", config, Set[TaskName](taskName), new MetricsRegistryMap)
     val mockTaskStorageManager = mock[TaskStorageManager]
 
     when(mockTaskStorageManager.init).thenAnswer(new Answer[String] {
@@ -340,9 +578,8 @@ class TestSamzaContainer extends AssertionsForJUnit with MockitoSugar {
       runLoop = null,
       consumerMultiplexer = consumerMultiplexer,
       producerMultiplexer = producerMultiplexer,
-      metrics = containerMetrics,
-      jmxServer = null
-    )
+      metrics = containerMetrics)
+
     container.startStores
     assertNotNull(containerMetrics.taskStoreRestorationMetrics)
     assertNotNull(containerMetrics.taskStoreRestorationMetrics.get(taskName))
@@ -357,7 +594,7 @@ class MockCheckpointManager extends CheckpointManager {
 
   override def register(taskName: TaskName): Unit = {}
 
-  override def readLastCheckpoint(taskName: TaskName): Checkpoint = { new Checkpoint(Map[SystemStreamPartition, String]()) }
+  override def readLastCheckpoint(taskName: TaskName): Checkpoint = { new Checkpoint(Map[SystemStreamPartition, String]().asJava) }
 
   override def writeCheckpoint(taskName: TaskName, checkpoint: Checkpoint): Unit = { }
 }

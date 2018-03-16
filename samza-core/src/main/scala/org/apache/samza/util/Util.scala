@@ -19,24 +19,22 @@
 
 package org.apache.samza.util
 
-import java.net._
 import java.io._
 import java.lang.management.ManagementFactory
-import java.util.zip.CRC32
-import org.apache.samza.{SamzaException, Partition}
-import org.apache.samza.system.{SystemFactory, SystemStreamPartition, SystemStream}
+import java.net._
 import java.util.Random
-import org.apache.samza.config.Config
-import org.apache.samza.config.SystemConfig
+import java.util.zip.CRC32
+
 import org.apache.samza.config.JobConfig.Config2Job
 import org.apache.samza.config.SystemConfig.Config2System
-import org.apache.samza.config.ConfigException
-import org.apache.samza.config.MapConfig
-import scala.collection.JavaConversions._
-import org.apache.samza.config.JobConfig
-import java.io.InputStreamReader
-import scala.collection.immutable.Map
+import org.apache.samza.config._
 import org.apache.samza.serializers._
+import org.apache.samza.system.{SystemFactory, SystemStream, SystemStreamPartition}
+import org.apache.samza.{Partition, SamzaException}
+
+import scala.collection.JavaConverters._
+import scala.collection.immutable.Map
+
 
 object Util extends Logging {
   val random = new Random
@@ -76,10 +74,17 @@ object Util extends Logging {
    * Instantiate a class instance from a given className.
    */
   def getObj[T](className: String) = {
-    Class
-      .forName(className)
-      .newInstance
-      .asInstanceOf[T]
+    try {
+      Class
+        .forName(className)
+        .newInstance
+        .asInstanceOf[T]
+    } catch {
+      case e: Throwable => {
+        error("Unable to instantiate a class instance for %s." format className, e)
+        throw e
+      }
+    }
   }
 
   /**
@@ -167,7 +172,7 @@ object Util extends Logging {
     readStream(httpConn.getInputStream)
   }
 
-  private def getHttpConnection(url: URL, timeout: Int): HttpURLConnection = {
+  def getHttpConnection(url: URL, timeout: Int): HttpURLConnection = {
     val conn = url.openConnection()
     conn.setConnectTimeout(timeout)
     conn.setReadTimeout(timeout)
@@ -183,8 +188,8 @@ object Util extends Logging {
   }
 
   /**
-   * Generates a coordinator stream name based off of the job name and job id
-   * for the jobd. The format is of the stream name will be
+   * Generates a coordinator stream name based on the job name and job id
+   * for the job. The format of the stream name will be:
    * &#95;&#95;samza_coordinator_&lt;JOBNAME&gt;_&lt;JOBID&gt;.
    */
   def getCoordinatorStreamName(jobName: String, jobId: String) = {
@@ -208,18 +213,17 @@ object Util extends Logging {
   def buildCoordinatorStreamConfig(config: Config) = {
     val (jobName, jobId) = getJobNameAndId(config)
     // Build a map with just the system config and job.name/job.id. This is what's required to start the JobCoordinator.
-    new MapConfig(
-      config.subset(SystemConfig.SYSTEM_PREFIX format config.getCoordinatorSystemName, false) ++
+    val map = config.subset(SystemConfig.SYSTEM_PREFIX format config.getCoordinatorSystemName, false).asScala ++
       Map[String, String](
         JobConfig.JOB_NAME -> jobName,
         JobConfig.JOB_ID -> jobId,
         JobConfig.JOB_COORDINATOR_SYSTEM -> config.getCoordinatorSystemName,
-        JobConfig.MONITOR_PARTITION_CHANGE -> String.valueOf(config.getMonitorPartitionChange),
-        JobConfig.MONITOR_PARTITION_CHANGE_FREQUENCY_MS -> String.valueOf(config.getMonitorPartitionChangeFrequency)))
+        JobConfig.MONITOR_PARTITION_CHANGE_FREQUENCY_MS -> String.valueOf(config.getMonitorPartitionChangeFrequency))
+    new MapConfig(map.asJava)
   }
 
   /**
-   * Get the Coordinator System and system factory from the configuration
+   * Get the coordinator system and system factory from the configuration
    * @param config
    * @return
    */
@@ -319,7 +323,7 @@ object Util extends Logging {
    * Convert a java map to a Scala map
    * */
   def javaMapAsScalaMap[T, K](javaMap: java.util.Map[T, K]): Map[T, K] = {
-    javaMap.toMap
+    javaMap.asScala.toMap
   }
 
   /**
@@ -331,9 +335,9 @@ object Util extends Logging {
     val localHost = InetAddress.getLocalHost
     if (localHost.isLoopbackAddress) {
       debug("Hostname %s resolves to a loopback address, trying to resolve an external IP address.".format(localHost.getHostName))
-      val networkInterfaces = if (System.getProperty("os.name").startsWith("Windows")) NetworkInterface.getNetworkInterfaces.toList else NetworkInterface.getNetworkInterfaces.toList.reverse
+      val networkInterfaces = if (System.getProperty("os.name").startsWith("Windows")) NetworkInterface.getNetworkInterfaces.asScala.toList else NetworkInterface.getNetworkInterfaces.asScala.toList.reverse
       for (networkInterface <- networkInterfaces) {
-        val addresses = networkInterface.getInetAddresses.toList.filterNot(address => address.isLinkLocalAddress || address.isLoopbackAddress)
+        val addresses = networkInterface.getInetAddresses.asScala.toList.filterNot(address => address.isLinkLocalAddress || address.isLoopbackAddress)
         if (addresses.nonEmpty) {
           val address = addresses.find(_.isInstanceOf[Inet4Address]).getOrElse(addresses.head)
           debug("Found an external IP address %s which represents the localhost.".format(address.getHostAddress))
@@ -395,4 +399,28 @@ object Util extends Logging {
    * @return Scala clock function
    */
   implicit def asScalaClock(c: HighResolutionClock): () => Long = () => c.nanoTime()
+
+  /**
+   * Re-writes configuration using a ConfigRewriter, if one is defined. If
+   * there is no ConfigRewriter defined for the job, then this method is a
+   * no-op.
+   *
+   * @param config The config to re-write
+   * @return re-written config
+   */
+  def rewriteConfig(config: Config): Config = {
+    def rewrite(c: Config, rewriterName: String): Config = {
+      val klass = config
+              .getConfigRewriterClass(rewriterName)
+              .getOrElse(throw new SamzaException("Unable to find class config for config rewriter %s." format rewriterName))
+      val rewriter = Util.getObj[ConfigRewriter](klass)
+      info("Re-writing config with " + rewriter)
+      rewriter.rewrite(rewriterName, c)
+    }
+
+    config.getConfigRewriters match {
+      case Some(rewriters) => rewriters.split(",").foldLeft(config)(rewrite(_, _))
+      case _ => config
+    }
+  }
 }

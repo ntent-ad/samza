@@ -38,7 +38,7 @@ class SerializedKeyValueStore[K, V](
     fromBytesOrNull(found, msgSerde)
   }
 
-  def getAll(keys: java.util.List[K]): java.util.Map[K, V] = {
+  override def getAll(keys: java.util.List[K]): java.util.Map[K, V] = {
     metrics.gets.inc(keys.size)
     val mapBytes = store.getAll(serializeKeys(keys))
     if (mapBytes != null) {
@@ -80,7 +80,7 @@ class SerializedKeyValueStore[K, V](
     store.delete(keyBytes)
   }
 
-  def deleteAll(keys: java.util.List[K]) = {
+  override def deleteAll(keys: java.util.List[K]) = {
     metrics.deletes.inc(keys.size)
     store.deleteAll(serializeKeys(keys))
   }
@@ -98,10 +98,10 @@ class SerializedKeyValueStore[K, V](
   }
 
   private class DeserializingIterator(iter: KeyValueIterator[Array[Byte], Array[Byte]]) extends KeyValueIterator[K, V] {
-    def hasNext() = iter.hasNext()
-    def remove() = iter.remove()
-    def close() = iter.close()
-    def next(): Entry[K, V] = {
+    override def hasNext() = iter.hasNext()
+    override def remove() = iter.remove()
+    override def close() = iter.close()
+    override def next(): Entry[K, V] = {
       val nxt = iter.next()
       val key = fromBytesOrNull(nxt.getKey, keySerde)
       val value = fromBytesOrNull(nxt.getValue, msgSerde)
