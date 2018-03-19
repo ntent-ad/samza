@@ -47,6 +47,8 @@ import org.codehaus.jackson.map.introspect.AnnotatedField;
 import org.codehaus.jackson.map.introspect.AnnotatedMethod;
 import org.codehaus.jackson.map.module.SimpleModule;
 import org.codehaus.jackson.type.TypeReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -66,6 +68,7 @@ import java.util.Map;
  * </p>
  */
 public class SamzaObjectMapper {
+  private static final Logger LOG = LoggerFactory.getLogger(SamzaObjectMapper.class);
   private static final ObjectMapper OBJECT_MAPPER = getObjectMapper();
 
   /**
@@ -74,9 +77,11 @@ public class SamzaObjectMapper {
    *         Partition, Config, and SystemStreamPartition.
    */
   public static ObjectMapper getObjectMapper() {
+    LOG.debug("Creating new object mapper and simple module");
     ObjectMapper mapper = new ObjectMapper();
     SimpleModule module = new SimpleModule("SamzaModule", new Version(1, 0, 0, ""));
 
+    LOG.debug("Adding SerDes for simple types");
     // Setup custom serdes for simple data types.
     module.addSerializer(Partition.class, new PartitionSerializer());
     module.addSerializer(SystemStreamPartition.class, new SystemStreamPartitionSerializer());
@@ -87,6 +92,7 @@ public class SamzaObjectMapper {
     module.addKeyDeserializer(SystemStreamPartition.class, new SystemStreamPartitionKeyDeserializer());
     module.addDeserializer(Config.class, new ConfigDeserializer());
 
+    LOG.debug("Adding mixins for data models");
     // Setup mixins for data models.
     mapper.getSerializationConfig().addMixInAnnotations(TaskModel.class, JsonTaskModelMixIn.class);
     mapper.getDeserializationConfig().addMixInAnnotations(TaskModel.class, JsonTaskModelMixIn.class);
@@ -94,6 +100,7 @@ public class SamzaObjectMapper {
     mapper.getSerializationConfig().addMixInAnnotations(JobModel.class, JsonJobModelMixIn.class);
     mapper.getDeserializationConfig().addMixInAnnotations(JobModel.class, JsonJobModelMixIn.class);
 
+    LOG.debug("Adding custom ContainerModel deserializer");
     module.addDeserializer(ContainerModel.class, new JsonDeserializer<ContainerModel>() {
       @Override
       public ContainerModel deserialize(JsonParser jp, DeserializationContext ctxt) throws IOException, JsonProcessingException {
@@ -115,10 +122,12 @@ public class SamzaObjectMapper {
       }
     });
 
+    LOG.debug("Setting up naming strategy and registering module");
     // Convert camel case to hyphenated field names, and register the module.
     mapper.setPropertyNamingStrategy(new CamelCaseToDashesStrategy());
     mapper.registerModule(module);
 
+    LOG.debug("Done!");
     return mapper;
   }
 
