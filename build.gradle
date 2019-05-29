@@ -19,7 +19,8 @@
 
 buildscript {
   repositories {
-    mavenCentral()
+    //mavenCentral()
+    maven {url "http://nexus.cb.ntent.com/nexus/content/groups/public/"}
   }
 
   apply from: file('gradle/buildscript.gradle'), to: buildscript
@@ -27,8 +28,9 @@ buildscript {
 
 allprojects {
   repositories {
-    mavenCentral()
-    mavenLocal()
+    //mavenCentral()
+    //mavenLocal()
+    maven {url "http://nexus.cb.ntent.com/nexus/content/groups/public/"}
   }
 }
 
@@ -86,12 +88,18 @@ rat {
     'gradle/wrapper/**',
     'gradlew',
     'gradlew.bat',
+    'local.gradle',
     'samza-test/state/**',
     'README.md',
     'RELEASE.md',
     'samza-test/src/main/resources/**',
     'samza-hdfs/src/main/resources/**',
     'samza-hdfs/src/test/resources/**',
+    'samza-core/empty.txt',
+    'samza-core/moreEnter.txt',
+    'samza-core/noEnter.txt',
+    'samza-core/oneEnter.txt',
+    'samza-core/twoEnter.txt',
     'out/**',
     'state/**'
   ]
@@ -731,6 +739,10 @@ project(":samza-kv-couchbase_$scalaSuffix") {
 
 project(":samza-hdfs_$scalaSuffix") {
   apply plugin: 'scala'
+  // Force character encoding in case the workspace was not set up correctly
+  tasks.withType(Javadoc) {
+    options.encoding = 'UTF-8'
+  }
 
   // Force scala joint compilation
   sourceSets.main.scala.srcDir "src/main/java"
@@ -902,3 +914,25 @@ project(":samza-test_$scalaSuffix") {
     from(configurations.archives.artifacts.files) { into("lib/") }
   }
 }
+
+/*
+subprojects {
+    task sourceJar(type: Jar) {
+        from sourceSets.main.allSource
+    }
+}
+
+subprojects {
+  apply plugin: 'maven-publish'
+  apply plugin: 'java'
+
+  publishing {
+        publications {
+            mavenSources(MavenPublication) {
+              from sourceJar
+              artifact sourceJar {classifier "sources"}
+            }
+        }
+    }
+}
+*/

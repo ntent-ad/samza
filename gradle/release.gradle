@@ -58,9 +58,9 @@ subprojects {
   apply plugin: 'com.bmuschko.nexus'
 
   nexus {
-    sign = true
-    repositoryUrl = 'https://repository.apache.org/service/local/staging/deploy/maven2'
-    snapshotRepositoryUrl = 'https://repository.apache.org/content/repositories/snapshots'
+    sign = false
+    repositoryUrl = 'http://nexus.cb.ntent.com/nexus/content/repositories/releases/' //'https://repository.apache.org/service/local/staging/deploy/maven2'
+    snapshotRepositoryUrl = 'http://nexus.cb.ntent.com/nexus/content/repositories/snapshots/' //'https://repository.apache.org/content/repositories/snapshots'
   }
 
   extraArchive {
