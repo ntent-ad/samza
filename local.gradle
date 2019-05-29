@@ -1,0 +1,17 @@
+subprojects {
+    project.sourceCompatibility = '1.8'
+
+    publishing {
+        repositories {
+            maven {
+                //url "$rootDir/repo"
+                //url "http://nexus.cb.ntent.com/nexus/content/repositories/snapshots/"
+                url "http://nexus.cb.ntent.com/nexus/content/repositories/releases/"
+                credentials {
+                    username mavenUser
+                    password mavenPassword
+                }
+            }
+        }
+    }
+}
