@@ -462,7 +462,9 @@ public class ZkUtils {
    */
   public void publishJobModel(String jobModelVersion, JobModel jobModel) {
     try {
+      LOG.debug("Getting object mapper to serialize job model");
       ObjectMapper mmapper = SamzaObjectMapper.getObjectMapper();
+      LOG.debug("Serializing job model");
       String jobModelStr = mmapper.writerWithDefaultPrettyPrinter().writeValueAsString(jobModel);
       LOG.info("jobModelAsString=" + jobModelStr);
       zkClient.createPersistent(keyBuilder.getJobModelPath(jobModelVersion), jobModelStr);
