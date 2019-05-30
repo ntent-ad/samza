@@ -314,7 +314,7 @@ project(":samza-elasticsearch_$scalaSuffix") {
   dependencies {
     compile project(':samza-api')
     compile project(":samza-core_$scalaSuffix")
-    compile "org.elasticsearch:elasticsearch:$elasticsearchVersion"
+    compile "org.elasticsearch.client:transport:$elasticsearchVersion"
     compile "org.slf4j:slf4j-api:$slf4jVersion"
     testCompile "junit:junit:$junitVersion"
     testCompile "org.mockito:mockito-core:$mockitoVersion"

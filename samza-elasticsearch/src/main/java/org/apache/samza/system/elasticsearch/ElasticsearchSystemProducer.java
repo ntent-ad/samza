@@ -22,12 +22,19 @@ package org.apache.samza.system.elasticsearch;
 import org.apache.samza.SamzaException;
 import org.apache.samza.system.OutgoingMessageEnvelope;
 import org.apache.samza.system.SystemProducer;
+import org.apache.samza.system.elasticsearch.actionrequest.ActionRequestFactory;
 import org.apache.samza.system.elasticsearch.indexrequest.IndexRequestFactory;
+import org.apache.samza.system.elasticsearch.indexrequest.IndexRequestFactoryWrapper;
+import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionResponse;
+import org.elasticsearch.action.DocWriteRequest;
+import org.elasticsearch.action.DocWriteResponse;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.bulk.BulkProcessor;
 import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.bulk.BulkResponse;
+import org.elasticsearch.action.delete.DeleteRequest;
+import org.elasticsearch.action.delete.DeleteResponse;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.client.Client;
@@ -63,7 +70,7 @@ public class ElasticsearchSystemProducer implements SystemProducer {
   private final AtomicBoolean sendFailed = new AtomicBoolean(false);
   private final AtomicReference<Throwable> thrown = new AtomicReference<>();
 
-  private final IndexRequestFactory indexRequestFactory;
+  private final ActionRequestFactory actionRequestFactory;
   private final BulkProcessorFactory bulkProcessorFactory;
   private final ElasticsearchSystemProducerMetrics metrics;
 
@@ -72,14 +79,19 @@ public class ElasticsearchSystemProducer implements SystemProducer {
   public ElasticsearchSystemProducer(String system, BulkProcessorFactory bulkProcessorFactory,
                                      Client client, IndexRequestFactory indexRequestFactory,
                                      ElasticsearchSystemProducerMetrics metrics) {
+    this(system, bulkProcessorFactory, client, new IndexRequestFactoryWrapper(indexRequestFactory), metrics);
+  }
+
+  public ElasticsearchSystemProducer(String system, BulkProcessorFactory bulkProcessorFactory,
+                                     Client client, ActionRequestFactory actionRequestFactory,
+                                     ElasticsearchSystemProducerMetrics metrics) {
     this.system = system;
     this.sourceBulkProcessor = new HashMap<>();
     this.bulkProcessorFactory = bulkProcessorFactory;
     this.client = client;
-    this.indexRequestFactory = indexRequestFactory;
     this.metrics = metrics;
+    this.actionRequestFactory = actionRequestFactory;
   }
-
 
   @Override
   public void start() {
@@ -146,14 +158,19 @@ public class ElasticsearchSystemProducer implements SystemProducer {
               ActionResponse resp = itemResp.getResponse();
               if (resp instanceof IndexResponse) {
                 writes += 1;
-                if (((IndexResponse) resp).isCreated()) {
+                if (((IndexResponse) resp).getResult().equals(DocWriteResponse.Result.CREATED)) {
                   metrics.inserts.inc();
                 } else {
                   metrics.updates.inc();
                 }
+              } else if (resp instanceof DeleteResponse) {
+                writes += 1;
+                metrics.deletes.inc();
               } else {
                 LOGGER.error("Unexpected Elasticsearch action response type: " + resp.getClass().getSimpleName());
               }
+
+
             }
           }
           LOGGER.info(String.format("Wrote %s messages from %s to %s.",
@@ -166,8 +183,14 @@ public class ElasticsearchSystemProducer implements SystemProducer {
 
   @Override
   public void send(String source, OutgoingMessageEnvelope envelope) {
-    IndexRequest indexRequest = indexRequestFactory.getIndexRequest(envelope);
-    sourceBulkProcessor.get(source).add(indexRequest);
+    ActionRequest actionRequest = actionRequestFactory.getActionRequest(envelope);
+    if (actionRequest instanceof IndexRequest) {
+      sourceBulkProcessor.get(source).add((IndexRequest)actionRequest);
+    } else if (actionRequest instanceof DeleteRequest) {
+      sourceBulkProcessor.get(source).add((DeleteRequest)actionRequest);
+    } else if (actionRequest instanceof DocWriteRequest) {
+      sourceBulkProcessor.get(source).add((DocWriteRequest)actionRequest);
+    }
   }
 
   @Override

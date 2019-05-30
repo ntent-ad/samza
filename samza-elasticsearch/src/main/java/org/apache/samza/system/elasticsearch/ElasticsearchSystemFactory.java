@@ -27,8 +27,9 @@ import org.apache.samza.system.SystemConsumer;
 import org.apache.samza.system.SystemFactory;
 import org.apache.samza.system.SystemProducer;
 import org.apache.samza.system.elasticsearch.client.ClientFactory;
+import org.apache.samza.system.elasticsearch.actionrequest.ActionRequestFactory;
 import org.apache.samza.system.elasticsearch.indexrequest.DefaultIndexRequestFactory;
-import org.apache.samza.system.elasticsearch.indexrequest.IndexRequestFactory;
+import org.apache.samza.system.elasticsearch.indexrequest.IndexRequestFactoryWrapper;
 import org.apache.samza.util.Util;
 import org.elasticsearch.client.Client;
 
@@ -54,7 +55,7 @@ public class ElasticsearchSystemFactory implements SystemFactory {
     return new ElasticsearchSystemProducer(name,
                                            getBulkProcessorFactory(elasticsearchConfig),
                                            getClient(elasticsearchConfig),
-                                           getIndexRequestFactory(elasticsearchConfig),
+                                           getActionRequestFactory(elasticsearchConfig),
                                            new ElasticsearchSystemProducerMetrics(name, metricsRegistry));
   }
 
@@ -80,12 +81,11 @@ public class ElasticsearchSystemFactory implements SystemFactory {
     }
   }
 
-  protected static IndexRequestFactory getIndexRequestFactory(ElasticsearchConfig config) {
-    if (config.getIndexRequestFactoryClassName().isPresent()) {
-      return Util.getObj(config.getIndexRequestFactoryClassName().get(), IndexRequestFactory.class);
+  protected static ActionRequestFactory getActionRequestFactory(ElasticsearchConfig config) {
+    if (config.getActionRequestFactoryClassName().isPresent()) {
+      return Util.getObj(config.getActionRequestFactoryClassName().get(), ActionRequestFactory.class);
     } else {
-      return new DefaultIndexRequestFactory();
+      return new IndexRequestFactoryWrapper(new DefaultIndexRequestFactory());
     }
   }
-
 }
