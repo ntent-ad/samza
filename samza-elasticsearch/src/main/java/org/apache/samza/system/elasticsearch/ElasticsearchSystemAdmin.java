@@ -22,17 +22,19 @@ package org.apache.samza.system.elasticsearch;
 import org.apache.samza.system.SystemAdmin;
 import org.apache.samza.system.SystemStreamMetadata;
 import org.apache.samza.system.SystemStreamPartition;
+import org.apache.samza.util.SinglePartitionWithoutOffsetsSystemAdmin;
 
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Elasticsearch does not make sense to be a changelog store at the moment.
+ * Elasticsearch as an output system does not have a notion of offsets, and partitions are not of use.
  *
- * <p>All the methods on this class return {@link UnsupportedOperationException}.</p>
+ * Instead of creating an implementation which responds with NotImplementedException however, use the util
+ * SinglePartitionWithoutOffsetsSystemAdmin. This allows Elasticsearch to work in a stand alone job.
  */
-public class ElasticsearchSystemAdmin implements SystemAdmin {
-  private static final SystemAdmin singleton = new ElasticsearchSystemAdmin();
+public class ElasticsearchSystemAdmin {
+  private static final SystemAdmin singleton = new SinglePartitionWithoutOffsetsSystemAdmin();
 
   private ElasticsearchSystemAdmin() {
     // Ensure this can not be constructed.
@@ -40,21 +42,5 @@ public class ElasticsearchSystemAdmin implements SystemAdmin {
 
   public static SystemAdmin getInstance() {
     return singleton;
-  }
-
-  @Override
-  public Map<SystemStreamPartition, String> getOffsetsAfter(
-      Map<SystemStreamPartition, String> map) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public Map<String, SystemStreamMetadata> getSystemStreamMetadata(Set<String> set) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public Integer offsetComparator(String offset1, String offset2) {
-	  throw new UnsupportedOperationException();
   }
 }
