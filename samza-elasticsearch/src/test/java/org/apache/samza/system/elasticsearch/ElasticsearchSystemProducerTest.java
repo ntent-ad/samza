@@ -23,10 +23,13 @@ import org.apache.samza.SamzaException;
 import org.apache.samza.metrics.MetricsRegistryMap;
 import org.apache.samza.system.OutgoingMessageEnvelope;
 import org.apache.samza.system.SystemProducer;
+import org.apache.samza.system.elasticsearch.actionrequest.ActionRequestFactory;
 import org.apache.samza.system.elasticsearch.indexrequest.IndexRequestFactory;
+import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.bulk.BulkProcessor;
 import org.elasticsearch.action.bulk.BulkResponse;
+import org.elasticsearch.action.delete.DeleteRequest;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.rest.RestStatus;
@@ -47,37 +50,47 @@ public class ElasticsearchSystemProducerTest {
   private static final BulkProcessorFactory BULK_PROCESSOR_FACTORY = mock(BulkProcessorFactory.class);
   private static final Client CLIENT = mock(Client.class);
   private static final IndexRequestFactory INDEX_REQUEST_FACTORY = mock(IndexRequestFactory.class);
-  public static final String SOURCE_ONE = "one";
-  public static final String SOURCE_TWO = "two";
-  private SystemProducer producer;
-  public static BulkProcessor processorOne;
-  public static BulkProcessor processorTwo;
+  private static final ActionRequestFactory ACTION_REQUEST_FACTORY = mock(ActionRequestFactory.class);
+  private static final String SOURCE_ONE = "one";
+  private static final String SOURCE_TWO = "two";
+  private SystemProducer indexRequestProducer;
+  private SystemProducer actionRequestProducer;
+  private static BulkProcessor processorOne;
+  private static BulkProcessor processorTwo;
   private ElasticsearchSystemProducerMetrics metrics;
 
   @Before
   public void setUp() throws Exception {
     metrics = new ElasticsearchSystemProducerMetrics("es", new MetricsRegistryMap());
-    producer = new ElasticsearchSystemProducer(SYSTEM_NAME,
+    indexRequestProducer = new ElasticsearchSystemProducer(SYSTEM_NAME,
                                                BULK_PROCESSOR_FACTORY,
                                                CLIENT,
                                                INDEX_REQUEST_FACTORY,
                                                metrics);
+
+    actionRequestProducer = new ElasticsearchSystemProducer(SYSTEM_NAME,
+                                                BULK_PROCESSOR_FACTORY,
+                                                CLIENT,
+                                                ACTION_REQUEST_FACTORY,
+                                                metrics);
 
     processorOne = mock(BulkProcessor.class);
     processorTwo = mock(BulkProcessor.class);
 
     when(BULK_PROCESSOR_FACTORY.getBulkProcessor(eq(CLIENT), any(BulkProcessor.Listener.class)))
         .thenReturn(processorOne);
-    producer.register(SOURCE_ONE);
+    indexRequestProducer.register(SOURCE_ONE);
+    actionRequestProducer.register(SOURCE_ONE);
 
     when(BULK_PROCESSOR_FACTORY.getBulkProcessor(eq(CLIENT), any(BulkProcessor.Listener.class)))
         .thenReturn(processorTwo);
-    producer.register(SOURCE_TWO);
+    indexRequestProducer.register(SOURCE_TWO);
+    actionRequestProducer.register(SOURCE_TWO);
   }
 
   @Test
   public void testRegisterStop() throws Exception {
-    producer.stop();
+    indexRequestProducer.stop();
 
     verify(processorOne).flush();
     verify(processorTwo).flush();
@@ -89,20 +102,52 @@ public class ElasticsearchSystemProducerTest {
   }
 
   @Test
-  public void testSend() throws Exception {
+  public void testLegacyIndexRequestSend() throws Exception {
     OutgoingMessageEnvelope envelope = mock(OutgoingMessageEnvelope.class);
     IndexRequest indexRequest = mock(IndexRequest.class);
 
     when(INDEX_REQUEST_FACTORY.getIndexRequest(envelope)).thenReturn(indexRequest);
 
-    producer.send(SOURCE_ONE, envelope);
+    indexRequestProducer.send(SOURCE_ONE, envelope);
 
     verify(processorOne).add(indexRequest);
   }
 
   @Test
+  public void testIndexRequestSent() throws Exception {
+    OutgoingMessageEnvelope envelope = mock(OutgoingMessageEnvelope.class);
+    IndexRequest actionRequest = mock(IndexRequest.class);
+
+    when(ACTION_REQUEST_FACTORY.getActionRequest(envelope)).thenReturn(actionRequest);
+
+    actionRequestProducer.send(SOURCE_ONE, envelope);
+
+    verify(processorOne).add(actionRequest);
+  }
+
+  @Test
+  public void testDeleteRequestSent() throws Exception {
+    OutgoingMessageEnvelope envelope = mock(OutgoingMessageEnvelope.class);
+    DeleteRequest actionRequest = mock(DeleteRequest.class);
+
+    when(ACTION_REQUEST_FACTORY.getActionRequest(envelope)).thenReturn(actionRequest);
+
+    actionRequestProducer.send(SOURCE_ONE, envelope);
+
+    verify(processorOne).add(actionRequest);
+  }
+
+  @Test
   public void testFlushNoFailedSend() throws Exception {
-    producer.flush(SOURCE_ONE);
+    indexRequestProducer.flush(SOURCE_ONE);
+
+    verify(processorOne).flush();
+    verify(processorTwo, never()).flush();
+  }
+
+  @Test
+  public void testActionRequestFlushNoFailedSend() throws Exception {
+    actionRequestProducer.flush(SOURCE_ONE);
 
     verify(processorOne).flush();
     verify(processorTwo, never()).flush();
@@ -115,11 +160,11 @@ public class ElasticsearchSystemProducerTest {
 
     when(BULK_PROCESSOR_FACTORY.getBulkProcessor(eq(CLIENT), listenerCaptor.capture()))
         .thenReturn(processorOne);
-    producer.register(SOURCE_ONE);
+    indexRequestProducer.register(SOURCE_ONE);
 
     listenerCaptor.getValue().afterBulk(0, null, new Throwable());
 
-    producer.flush(SOURCE_ONE);
+    indexRequestProducer.flush(SOURCE_ONE);
   }
 
   @Test(expected=SamzaException.class)
@@ -129,13 +174,13 @@ public class ElasticsearchSystemProducerTest {
 
     when(BULK_PROCESSOR_FACTORY.getBulkProcessor(eq(CLIENT), listenerCaptor.capture()))
         .thenReturn(processorOne);
-    producer.register(SOURCE_ONE);
+    indexRequestProducer.register(SOURCE_ONE);
 
     BulkResponse response = getRespWithFailedDocument(RestStatus.BAD_REQUEST);
 
     listenerCaptor.getValue().afterBulk(0, null, response);
 
-    producer.flush(SOURCE_ONE);
+    indexRequestProducer.flush(SOURCE_ONE);
   }
 
   @Test
@@ -145,14 +190,14 @@ public class ElasticsearchSystemProducerTest {
 
     when(BULK_PROCESSOR_FACTORY.getBulkProcessor(eq(CLIENT), listenerCaptor.capture()))
             .thenReturn(processorOne);
-    producer.register(SOURCE_ONE);
+    indexRequestProducer.register(SOURCE_ONE);
 
     BulkResponse response = getRespWithFailedDocument(RestStatus.CONFLICT);
 
     listenerCaptor.getValue().afterBulk(0, null, response);
     assertEquals(1, metrics.conflicts.getCount());
 
-    producer.flush(SOURCE_ONE);
+    indexRequestProducer.flush(SOURCE_ONE);
   }
 
   private BulkResponse getRespWithFailedDocument(RestStatus status) {

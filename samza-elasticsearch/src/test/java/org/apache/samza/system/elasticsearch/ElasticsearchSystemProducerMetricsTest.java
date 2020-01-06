@@ -45,10 +45,11 @@ public class ElasticsearchSystemProducerMetricsTest {
         assertEquals(GRP_NAME, groups.toArray()[0]);
 
         Map<String, Metric> metricMap = registry.getGroup(GRP_NAME);
-        assertEquals(4, metricMap.size());
+        assertEquals(5, metricMap.size());
         assertEquals(29L, ((Counter) metricMap.get("es-bulk-send-success")).getCount());
         assertEquals(1L, ((Counter) metricMap.get("es-docs-inserted")).getCount());
         assertEquals(7L, ((Counter) metricMap.get("es-docs-updated")).getCount());
+        assertEquals(0L, ((Counter) metricMap.get("es-docs-deleted")).getCount());
         assertEquals(3L, ((Counter) metricMap.get("es-version-conflicts")).getCount());
     }
 

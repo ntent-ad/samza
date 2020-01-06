@@ -26,9 +26,11 @@ import org.elasticsearch.client.transport.TransportClient;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.elasticsearch.common.transport.TransportAddress;
+import org.elasticsearch.transport.client.PreBuiltTransportClient;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.Map;
-import java.net.InetSocketAddress;
 
 /**
  * A {@link ClientFactory} that creates a {@link org.elasticsearch.node.Node} client that connects
@@ -42,13 +44,17 @@ import java.net.InetSocketAddress;
  */
 public class TransportClientFactory implements ClientFactory {
   private final Map<String, String> clientSettings;
-  private final String transportHost;
+  private final InetAddress transportHost;
   private final int transportPort;
 
   public TransportClientFactory(ElasticsearchConfig config) {
     clientSettings = config.getElasticseachSettings();
-    transportHost = config.getTransportHost().orElseThrow(() ->
-      new SamzaException("You must specify the transport host for TransportClientFactory with the Elasticsearch system."));
+    try {
+      transportHost = InetAddress.getByName(config.getTransportHost().orElseThrow(() ->
+              new SamzaException("You must specify the transport host for TransportClientFactory with the Elasticsearch system.")));
+    } catch (UnknownHostException e) {
+      throw new RuntimeException("Transport host is invalid", e);
+    }
 
     transportPort = config.getTransportPort().orElseThrow(() ->
       new SamzaException("You must specify the transport port for TransportClientFactory with the Elasticsearch system."));
@@ -56,12 +62,15 @@ public class TransportClientFactory implements ClientFactory {
 
   @Override
   public Client getClient() {
-    Settings settings = Settings.settingsBuilder()
+    Settings settings = Settings.builder()
         .put(clientSettings)
         .build();
 
-    TransportAddress address = new InetSocketTransportAddress(new InetSocketAddress(transportHost, transportPort));
+    TransportAddress address = new InetSocketTransportAddress(transportHost, transportPort);
 
-    return TransportClient.builder().settings(settings).build().addTransportAddress(address);
+    TransportClient client = new PreBuiltTransportClient(settings);
+    client.addTransportAddress(address);
+
+    return client;
   }
 }
