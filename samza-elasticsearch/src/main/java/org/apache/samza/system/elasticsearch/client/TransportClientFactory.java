@@ -24,7 +24,6 @@ import org.apache.samza.config.ElasticsearchConfig;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.client.transport.TransportClient;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.transport.client.PreBuiltTransportClient;
 
@@ -62,13 +61,14 @@ public class TransportClientFactory implements ClientFactory {
 
   @Override
   public Client getClient() {
-    Settings settings = Settings.builder()
-        .put(clientSettings)
-        .build();
+    Settings.Builder settingsBuilder =  Settings.builder();
+    for (String setting:clientSettings.keySet()) {
+      settingsBuilder.put(setting,clientSettings.get(setting));
+    }
 
-    TransportAddress address = new InetSocketTransportAddress(transportHost, transportPort);
+    TransportAddress address = new TransportAddress(transportHost, transportPort);
 
-    TransportClient client = new PreBuiltTransportClient(settings);
+    TransportClient client = new PreBuiltTransportClient(settingsBuilder.build());
     client.addTransportAddress(address);
 
     return client;

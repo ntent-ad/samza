@@ -112,6 +112,7 @@ allprojects {
   // dependency-versions-scala file applied above.
   tasks.withType(ScalaCompile) {
     scalaCompileOptions.additionalParameters = scalaOptions
+    options.encoding = "UTF-8"
   }
 }
 
@@ -129,6 +130,7 @@ subprojects {
   tasks.withType(ScalaCompile) {
     // show compile errors in console output
     logging.setLevel LogLevel.WARN
+    options.encoding = "UTF-8"
   }
 
   tasks.withType(Test) {
@@ -740,9 +742,7 @@ project(":samza-kv-couchbase_$scalaSuffix") {
 project(":samza-hdfs_$scalaSuffix") {
   apply plugin: 'scala'
   // Force character encoding in case the workspace was not set up correctly
-  tasks.withType(Javadoc) {
-    options.encoding = 'UTF-8'
-  }
+
 
   // Force scala joint compilation
   sourceSets.main.scala.srcDir "src/main/java"
